@@ -20,17 +20,19 @@ enum AccountStatus {
 }
 
 model BankAccount {
-  id            String        @id @default(uuid())
-  accountNumber String        @unique @map("account_number")
-  customerId    String        @map("customer_id")
-  accountType   AccountType   @default(SAVINGS) @map("account_type")
-  status        AccountStatus @default(ACTIVE)
-  currency      String        @default("INR")
-  dailyLimit    BigInt        @default(10000000) @map("daily_limit") // In paise: default ₹1,00,000.00
+  id               String        @id @default(uuid())
+  accountNumber    String        @unique @map("account_number")
+  customerId       String        @map("customer_id")
+  accountType      AccountType   @default(SAVINGS) @map("account_type")
+  status           AccountStatus @default(ACTIVE)
+  currency         String        @default("INR")
+  dailyLimit       BigInt        @default(10000000) @map("daily_limit") // In paise: default ₹1,00,000.00
+  // Last daily limit set by a bank administrator: the owner may lower freely but raise only up to this (and the customer cap)
+  bankLimitCeiling BigInt?       @map("bank_limit_ceiling")
   // Version of the control state (status, limit) pushed to the ledger; bumped on every change
-  version       Int           @default(1)
-  createdAt     DateTime      @default(now()) @map("created_at")
-  updatedAt     DateTime      @updatedAt @map("updated_at")
+  version          Int           @default(1)
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
 
   @@index([customerId])
   @@index([accountNumber])
