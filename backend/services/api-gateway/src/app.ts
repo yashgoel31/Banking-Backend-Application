@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import net from 'net';
 import express, { Request, Response } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -9,9 +8,12 @@ import {
   correlationIdMiddleware,
   createRateLimiter,
   errorHandlerMiddleware,
+  isAddressAllowed,
   logger,
   notFoundHandler,
+  parseCidrs,
   parseTrustProxy,
+  staffNetworkError,
   startHttpServer,
 } from '@banksphere/common';
 import { createProxy, RouteTarget } from './proxy';
@@ -29,7 +31,11 @@ export function defaultRoutes(env: NodeJS.ProcessEnv = process.env): RouteTarget
   ];
 }
 
-/** Path prefixes that only staff use; restricted by STAFF_ALLOWED_CIDRS when it is configured */
+/**
+ * Path prefixes that only staff use; restricted by STAFF_ALLOWED_CIDRS when it is configured. Defence in
+ * depth only: staff actions on shared prefixes (/customers/:id, /accounts/:id/status, ...) are enforced by
+ * role in every service (createAuthenticate), which is the real control.
+ */
 const STAFF_PATHS = [
   '/api/v1/auth/admin',
   '/api/v1/fraud',
@@ -48,19 +54,6 @@ export function canonicalPath(path: string): string | null {
   } catch {
     return null;
   }
-}
-
-/** "10.0.0.0/8,192.168.1.0/24,fd00::/8" -> BlockList, or null when unset */
-export function parseCidrs(value: string | undefined): net.BlockList | null {
-  if (!value || !value.trim()) return null;
-  const list = new net.BlockList();
-  for (const entry of value.split(',').map((e) => e.trim()).filter(Boolean)) {
-    const [address, prefix] = entry.split('/');
-    const family = net.isIPv6(address) ? 'ipv6' : 'ipv4';
-    if (prefix === undefined) list.addAddress(address, family);
-    else list.addSubnet(address, Number(prefix), family);
-  }
-  return list;
 }
 
 /** Upstreams whose failure makes the API unusable; notification/fraud degrade gracefully instead */
@@ -149,11 +142,10 @@ export function createGateway(options: GatewayOptions = {}) {
         return;
       }
       if (!STAFF_PATHS.some((p) => path === p || path.startsWith(`${p}/`))) return next();
-      const ip = (req.ip || '').replace(/^::ffff:/, '');
-      const family = net.isIPv6(ip) ? 'ipv6' : 'ipv4';
-      if (ip && staffNetworks.check(ip, family)) return next();
+      if (isAddressAllowed(staffNetworks, req.ip)) return next();
       req.log.warn({ path: req.path }, 'Staff API called from a non-allowed network');
-      res.status(403).json({ error: { code: 'NETWORK_NOT_ALLOWED', message: 'This endpoint is only available from the staff network', correlationId: req.correlationId } });
+      const error = staffNetworkError();
+      res.status(error.statusCode).json({ error: { code: error.errorCode, message: error.message, correlationId: req.correlationId } });
     });
   }
 

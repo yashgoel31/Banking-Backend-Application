@@ -101,7 +101,7 @@ single-analyst alert closure and internal-API access. It fails if any request re
 3. Set `APP_BASE_URL` to your frontend. Email links go to `/verify-email`, `/reset-password`, `/staff/activate`
    and `/mfa/enrol`, always as `#token=...` (in the URL fragment, so it never reaches server logs or `Referer`).
 4. Set `STAFF_EMAIL_DOMAIN` (staff must use your corporate domain), **`STAFF_ALLOWED_CIDRS`** (VPN/office
-   ranges allowed to call staff-only APIs) and **`GATEWAY_TRUST_PROXY`** (proxies in front of the gateway that
+   ranges staff may sign in and work from) and **`GATEWAY_TRUST_PROXY`** (proxies in front of the gateway that
    overwrite `X-Forwarded-For`; `0` if none). The services refuse to start in production without them.
 5. `docker compose up -d --build`, then create two bootstrap administrators (see above) and hand each their
    enrolment token out of band. Every further staff member is requested by one administrator, approved by
@@ -142,7 +142,7 @@ Production properties of the compose stack:
 | `EMAIL_TRANSPORT`, `SMTP_*`, `MAIL_FROM` | auth, notification | `console` transport is refused in production. |
 | `APP_BASE_URL` | auth | Frontend base URL for email links. |
 | `STAFF_EMAIL_DOMAIN`, `STAFF_ENROLMENT_TTL_HOURS` (24), `ADMIN_REQUEST_TTL_HOURS` (24) | auth | Staff onboarding. |
-| `STAFF_ALLOWED_CIDRS` | gateway | Networks allowed to call staff-only APIs (empty = unrestricted). |
+| `STAFF_ALLOWED_CIDRS` | all | Networks staff may work from: every service refuses staff tokens from elsewhere (by role, on every route), auth refuses staff sign-in after the password check, and the gateway also blocks staff-only paths. Empty = unrestricted; required in production. |
 | `PASSWORD_RESET_TTL_MINUTES` (30), `EMAIL_VERIFICATION_TTL_HOURS` (24), `SESSION_MAX_DAYS` (30) | auth | Token lifetimes. |
 | `LOGIN_MAX_FAILURES` (5), `LOGIN_LOCKOUT_SECONDS` (900), `MFA_MAX_FAILURES_PER_HOUR` (10), `AUTH_EMAILS_PER_HOUR` (3) | auth | Brute-force / mail-bombing controls. |
 | `AUTH_RATE_LIMIT_MAX` (30), `AUTH_RECOVERY_RATE_LIMIT_MAX` (10), `GATEWAY_RATE_LIMIT_PER_MINUTE` (300) | auth, gateway | Per-IP limits. |
@@ -203,6 +203,9 @@ Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAG
 
 - **Identity only from verified JWTs**: ES256 with `kid` (algorithm pinned, issuer/audience/expiry checked);
   client headers like `x-user-id` are ignored and stripped by the gateway.
+- **Staff network**: with `STAFF_ALLOWED_CIDRS` set, staff tokens only work from those networks on every route
+  of every service (decided by role, since staff actions share paths with customer routes) and staff can only sign
+  in from them; the gateway's path allowlist is a second layer.
 - **Revocable sessions**: access tokens carry a `jti`, a session id and the user's token version. Logout
   denylists the token and its session; refresh-token reuse (theft) kills the whole session, including access
   tokens already issued; password change/reset, MFA changes and disabling bump the version. Redis mirrors the

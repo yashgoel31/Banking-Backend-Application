@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import net from 'net';
 import { Request, Response, NextFunction, RequestHandler } from 'express';
 import { AuthenticatedUser, UserRole, verifyAccessToken } from '../auth/jwt';
 import { TokenStateStore } from '../auth/token-state';
@@ -9,6 +10,7 @@ import {
   UnauthorizedError,
 } from '../errors/app-error';
 import { logger } from '../logger/logger';
+import { isAddressAllowed, staffNetworkError, staffNetworksFromEnv } from '../http/network';
 
 declare global {
   namespace Express {
@@ -38,6 +40,8 @@ export interface AuthenticateOptions {
    * so a staff member without MFA can enrol but cannot use any privileged API.
    */
   allowStaffWithoutMfa?: boolean;
+  /** Networks staff may call from; defaults to STAFF_ALLOWED_CIDRS (null = unrestricted) */
+  staffNetworks?: net.BlockList | null;
 }
 
 /**
@@ -47,8 +51,19 @@ export interface AuthenticateOptions {
  *
  * Identity is only ever taken from a signed token, never from client-controlled headers.
  * If the token-state store is unreachable the request is refused (fail closed).
+ *
+ * When STAFF_ALLOWED_CIDRS is set, every staff token is refused from outside those networks, on every
+ * route. This is decided by ROLE, not path: staff actions share prefixes with customer routes
+ * (/customers/:id, /accounts/:id/status, /transactions/accounts/:id/history), which the gateway's path
+ * allowlist can't tell apart. req.ip is the client: services trust one proxy hop (the gateway), and the
+ * gateway overwrites X-Forwarded-For with the client address.
  */
 export function createAuthenticate(tokenState: TokenStateStore, options: AuthenticateOptions = {}): RequestHandler {
+  const staffNetworks = options.staffNetworks !== undefined ? options.staffNetworks : staffNetworksFromEnv();
+  if (staffNetworks === null && options.staffNetworks === undefined && process.env.NODE_ENV === 'production') {
+    // Same rule as the gateway: an unset allowlist would open every staff API to the internet
+    throw new Error('STAFF_ALLOWED_CIDRS must be set in production (the VPN/office networks staff may work from)');
+  }
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     try {
       const token = readBearerToken(req);
@@ -71,6 +86,14 @@ export function createAuthenticate(tokenState: TokenStateStore, options: Authent
       }
       if (revoked) {
         throw new UnauthorizedError('Access token has been revoked');
+      }
+
+      if (staffNetworks && isStaff(user) && !isAddressAllowed(staffNetworks, req.ip)) {
+        (req.log ?? logger).warn(
+          { userId: user.id, role: user.role, path: req.path, alert: 'STAFF_OFF_NETWORK' },
+          'Staff token used from a non-allowed network'
+        );
+        throw staffNetworkError();
       }
 
       if (isStaff(user) && !user.mfa && !options.allowStaffWithoutMfa) {
