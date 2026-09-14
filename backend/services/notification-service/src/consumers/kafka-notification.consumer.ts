@@ -71,7 +71,9 @@ export class KafkaNotificationConsumer {
           default:
             logger.warn({ topic }, 'Unhandled notification topic');
         }
-      }
+      },
+      // Retries are parked on notification.<topic>.retry, which only notification-svc may write and read
+      { retryNamespace: 'notification' }
     );
   }
 
