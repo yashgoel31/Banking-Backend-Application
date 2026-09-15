@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { LedgerService, startOfIstDay } from '../src/services/ledger.service';
 import { TellerService } from '../src/services/teller.service';
 import { BeneficiaryService } from '../src/services/beneficiary.service';
-import { LedgerPolicy, istBusinessDate } from '../src/services/ledger-core';
+import { LedgerPolicy, defaultLedgerPolicy, istBusinessDate } from '../src/services/ledger-core';
 import { IdempotencyService } from '../src/services/idempotency.service';
 import {
   InsufficientFundsError,
@@ -40,6 +40,7 @@ const policy: LedgerPolicy = {
   withdrawalCodeStepUpThreshold: 2_500_000n,
   stepUpMaxAgeSeconds: 300,
   mfaFactorMinAgeHours: 24,
+  maxNewBeneficiariesPerDay: 10,
 };
 
 const row = (id: string, balance: bigint, customer: string, extra: Partial<any> = {}) => ({
@@ -450,6 +451,40 @@ describe('LedgerService: account control state', () => {
     const prisma = buildPrisma([row('acc-1', 5n, 'alice')], {});
     await expect(new LedgerService(prisma, policy).closeAccount('acc-1', 2)).rejects.toThrow('balance must be zero');
     expect(prisma.ledgerAccount.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('Ledger policy configuration', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it('uses a default only when the variable is unset; an explicit 0 is honoured', () => {
+    delete process.env.BENEFICIARY_COOLING_MINUTES;
+    delete process.env.MFA_FACTOR_MIN_AGE_HOURS;
+    delete process.env.MAX_NEW_BENEFICIARIES_PER_DAY;
+    const defaults = defaultLedgerPolicy();
+    expect(defaults.beneficiaryCoolingMinutes).toBe(60);
+    expect(defaults.mfaFactorMinAgeHours).toBe(24);
+    expect(defaults.maxNewBeneficiariesPerDay).toBe(10);
+    process.env.BENEFICIARY_COOLING_MINUTES = '0';
+    process.env.STEP_UP_THRESHOLD_PAISE = '20000000';
+    expect(defaultLedgerPolicy()).toEqual(expect.objectContaining({ beneficiaryCoolingMinutes: 0, stepUpThreshold: 20_000_000n }));
+  });
+
+  it.each([
+    ['BENEFICIARY_COOLING_MINUTES', ''], // Number('') is 0: would silently disable the cooling-off period
+    ['MFA_FACTOR_MIN_AGE_HOURS', ' '],
+    ['STEP_UP_MAX_AGE_SECONDS', 'abc'], // NaN: every step-up check would fail with a 500
+    ['WITHDRAWAL_CODE_TTL_MINUTES', '-5'],
+    ['CASH_APPROVAL_TTL_HOURS', '0'],
+    ['MAX_NEW_BENEFICIARIES_PER_DAY', '2.5'],
+    ['NEW_BENEFICIARY_LIMIT_PAISE', '1e6'],
+    ['CUSTOMER_DAILY_OUTFLOW_LIMIT_PAISE', ''],
+  ])('refuses to start with %s=%j', (name, value) => {
+    process.env[name] = value;
+    expect(() => defaultLedgerPolicy()).toThrow(name);
   });
 });
 
