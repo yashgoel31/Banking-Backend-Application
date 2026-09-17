@@ -175,7 +175,7 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 | `POST /api/v1/auth/admin/users` `{email, role}` → 202 request | BANK_ADMIN |
 | `PATCH /api/v1/auth/admin/users/:id/status` | BANK_ADMIN (customers: immediate, re-enable by a different admin; staff: 202 request) |
 | `POST /api/v1/auth/admin/users/:id/mfa/reset` | BANK_ADMIN (always a 202 four-eyes request) |
-| `GET /api/v1/auth/admin/requests` · `POST .../:id/approve` · `POST .../:id/reject` | BANK_ADMIN (never the requester or the target) |
+| `GET /api/v1/auth/admin/requests` · `POST .../:id/approve` · `POST .../:id/reject` | BANK_ADMIN (approve: never the requester or the target; reject: never the target, the requester may withdraw) |
 | `GET/POST/PATCH /api/v1/customers/me` | owner |
 | `GET /api/v1/customers/:userId` (logged) · `PATCH /api/v1/customers/:userId/kyc` `{kycStatus, expectedVersion}` | staff · KYC_OFFICER |
 | `POST /api/v1/accounts` (needs VERIFIED KYC) · `GET /api/v1/accounts` · `GET /api/v1/accounts/:id` | owner (staff may list via `?customerId=`) |
