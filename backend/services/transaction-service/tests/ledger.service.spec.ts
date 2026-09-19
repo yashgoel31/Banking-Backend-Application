@@ -13,7 +13,7 @@ import {
   AccountInactiveError,
   IdempotencyKeyReuseError,
 } from '../src/errors';
-import { AuthenticatedUser, ForbiddenError, ConflictError, HttpError } from '@banksphere/common';
+import { AuthenticatedUser, ForbiddenError, ConflictError, HttpError, logger } from '@banksphere/common';
 
 const NOW = () => Math.floor(Date.now() / 1000);
 // Fresh TOTP verification on a factor enrolled two days ago: strong, recent authentication
@@ -115,8 +115,10 @@ function buildPrisma(rows: any[], owners: Record<string, string>, drawerBalance 
       findFirst: jest.fn().mockResolvedValue(openSession()),
       findUnique: jest.fn().mockResolvedValue(null),
       findUniqueOrThrow: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn(({ data }: any) => ({ id: 'sess-1', ...data })),
       update: jest.fn(({ data }: any) => ({ ...openSession(), ...data })),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     withdrawalAuthorization: {
       findFirst: jest.fn().mockResolvedValue(null),
@@ -130,11 +132,57 @@ function buildPrisma(rows: any[], owners: Record<string, string>, drawerBalance 
       update: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUniqueOrThrow: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
       aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0n } }),
     },
   };
   prisma.$transaction = jest.fn((cb: any) => cb(prisma));
   return prisma;
+}
+
+/**
+ * Gives a mocked client real transaction semantics for the listed models: writes made through `tx` only
+ * count once the callback resolves (commit) and are dropped when it throws (rollback). A call on the ROOT
+ * client while a transaction is open would need a second pooled connection; those are listed in
+ * `secondConnection`. Configure the mocks as usual (on `prisma`), before or after calling this.
+ */
+function transactional(prisma: any, models = ['auditLog', 'tellerSession', 'outboxEvent', 'beneficiary', 'withdrawalAuthorization']) {
+  const viaTx = new Set<unknown>();
+  const rolledBack = new Set<unknown>();
+  const secondConnection: string[] = [];
+  const mocks = () =>
+    models.flatMap((m) => Object.entries<any>(prisma[m] ?? {}).filter(([, f]) => f?.mock).map(([op, f]) => [`${m}.${op}`, f] as const));
+  prisma.$transaction = jest.fn(async (cb: any) => {
+    const started = new Map(mocks().map(([name, f]) => [name, f.mock.calls.length]));
+    const mine: unknown[] = [];
+    const tx = Object.create(prisma);
+    for (const m of models) {
+      tx[m] = new Proxy(
+        {},
+        {
+          get: (_t, op: string) => (args: any = {}) => {
+            viaTx.add(args);
+            mine.push(args);
+            return prisma[m][op](args);
+          },
+        }
+      );
+    }
+    try {
+      return await cb(tx);
+    } catch (err) {
+      mine.forEach((a) => rolledBack.add(a));
+      throw err;
+    } finally {
+      for (const [name, f] of mocks()) {
+        for (const [args] of f.mock.calls.slice(started.get(name) ?? 0)) if (!viaTx.has(args)) secondConnection.push(name);
+      }
+    }
+  });
+  const committed = (model: string, op: string): any[] =>
+    (prisma[model][op].mock.calls as any[][]).map(([a]) => a).filter((a) => !rolledBack.has(a));
+  return { secondConnection, committed, audits: () => committed('auditLog', 'create').map((a) => a.data.action) };
 }
 
 describe('LedgerService: transfers', () => {
@@ -410,6 +458,19 @@ describe('TellerService: cash operations (drawer, session, maker-checker)', () =
     ]);
   });
 
+  it('a teller only sees the cash operations they requested; supervisors see them all', async () => {
+    const prisma = buildPrisma([], {});
+    const svc = new TellerService(prisma, policy);
+    await svc.listCashOperations('EXECUTED', 20, 0, teller);
+    expect(prisma.cashOperation.findMany.mock.calls.at(-1)[0].where).toEqual({ status: 'EXECUTED', requestedBy: 'teller' });
+    await svc.listCashOperations(undefined, 20, 0, teller);
+    expect(prisma.cashOperation.findMany.mock.calls.at(-1)[0].where).toEqual({ requestedBy: 'teller' });
+    await svc.listCashOperations(undefined, 20, 0, checker);
+    expect(prisma.cashOperation.findMany.mock.calls.at(-1)[0].where).toEqual({});
+    await svc.listCashOperations('PENDING_APPROVAL', 20, 0, { ...checker, role: 'SUPPORT' });
+    expect(prisma.cashOperation.findMany.mock.calls.at(-1)[0].where).toEqual({ status: 'PENDING_APPROVAL' });
+  });
+
   it('WITHDRAWAL CODES: large codes need recent strong auth; every code is audited and emailed', async () => {
     const prisma = buildPrisma([row('acc-1', 9_000_000n, 'alice')], { 'acc-1': 'alice' });
     const svc = new TellerService(prisma, policy);
@@ -419,6 +480,181 @@ describe('TellerService: cash operations (drawer, session, maker-checker)', () =
     expect(prisma.auditLog.create.mock.calls.at(-1)[0].data.action).toBe('WITHDRAWAL_CODE_CREATED');
     expect(prisma.outboxEvent.create.mock.calls.at(-1)[0].data.eventType).toBe('withdrawal.code.created.v1');
     await expect(svc.createWithdrawalCode(alice, 'acc-1', 3_000_000n)).resolves.toHaveProperty('authorizationCode');
+  });
+});
+
+describe('TellerService: close-out, disputes and teller-facing views', () => {
+  const TELLER_VIEW_FIELDS = ['acceptedAt', 'businessDate', 'closedAt', 'id', 'issuedBy', 'openedAt', 'openingFloat', 'signedOffAt', 'signedOffBy', 'status', 'tellerId'];
+  const closedSession = (extra: Partial<any> = {}) => ({
+    ...openSession(),
+    status: 'CLOSED',
+    declaredClosing: 100_000n,
+    openingFloat: 50_000n,
+    issuedBy: 'checker',
+    disputedCount: null,
+    disputedBy: null,
+    disputedAt: null,
+    ...extra,
+  });
+
+  it('BLIND COUNT: the session list hides the declared count, expected cash and any disputed count until sign-off', async () => {
+    const prisma = buildPrisma([], {});
+    prisma.tellerSession.findMany.mockResolvedValue([
+      closedSession({ id: 's-closed', disputedCount: 99_000n, disputedBy: 'checker', disputedAt: new Date() }),
+      closedSession({ id: 's-done', status: 'RECONCILED', expectedClosing: 100_500n, discrepancy: -500n }),
+    ]);
+    const [pending, done]: any[] = await new TellerService(prisma, policy).listSessions(undefined, 20, 0);
+    for (const field of ['declaredClosing', 'expectedClosing', 'discrepancy', 'disputedCount']) expect(pending).not.toHaveProperty(field);
+    expect(pending).toEqual(expect.objectContaining({ id: 's-closed', status: 'CLOSED', disputedBy: 'checker', drawerAccountId: DRAWER.id }));
+    expect(done).toEqual(expect.objectContaining({ declaredClosing: '100000', expectedClosing: '100500', discrepancy: '-500' }));
+  });
+
+  it('AUDIT: float and closing-count mismatches are committed, although the request is refused', async () => {
+    const prisma = buildPrisma([], {}, 100_500n);
+    const db = transactional(prisma);
+    const svc = new TellerService(prisma, policy);
+
+    prisma.tellerSession.findFirst.mockResolvedValue({ ...openSession(), status: 'ISSUED', openingFloat: 100_000n });
+    expect((await svc.acceptFloat(teller, 90_000n).catch((e) => e)).errorCode).toBe('FLOAT_MISMATCH');
+    prisma.tellerSession.findUniqueOrThrow.mockResolvedValue(closedSession());
+    expect((await svc.signOffSession(checker, 'sess-1', 99_000n).catch((e) => e)).errorCode).toBe('COUNT_MISMATCH');
+
+    expect(db.audits()).toEqual(['TELLER_FLOAT_COUNT_MISMATCH', 'TELLER_COUNT_MISMATCH']);
+    expect(db.committed('tellerSession', 'update').map((u) => u.data)).toEqual([
+      { disputedCount: 99_000n, disputedBy: 'checker', disputedAt: expect.any(Date) },
+    ]);
+    expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+  });
+
+  it('RE-DECLARE: until sign-off the teller can correct a closing count (POST /close again); the old figure stays in the audit', async () => {
+    const prisma = buildPrisma([], {});
+    prisma.tellerSession.findFirst.mockResolvedValue(closedSession());
+    const view: any = await new TellerService(prisma, policy).closeSession(teller, 100_500n);
+    expect(prisma.tellerSession.findFirst).toHaveBeenCalledWith({ where: { tellerId: 'teller', status: { in: ['OPEN', 'CLOSED'] } } });
+    expect(prisma.tellerSession.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sess-1', status: 'CLOSED', declaredClosing: 100_000n },
+      data: { declaredClosing: 100_500n },
+    });
+    expect(prisma.auditLog.create.mock.calls.at(-1)[0].data).toEqual(
+      expect.objectContaining({ action: 'TELLER_CLOSING_REDECLARED', targetId: 'sess-1', details: { previous: '100000', counted: '100500' } })
+    );
+    expect(Object.keys(view).sort()).toEqual(TELLER_VIEW_FIELDS);
+
+    // Signed off (or re-declared) in the meantime: the conditional update matches nothing
+    prisma.tellerSession.updateMany.mockResolvedValue({ count: 0 });
+    await expect(new TellerService(prisma, policy).closeSession(teller, 100_700n)).rejects.toThrow(ConflictError);
+  });
+
+  it('DISPUTE: a second, DIFFERENT administrator with the same blind count settles a disputed declaration', async () => {
+    const prisma = buildPrisma([], {}, 100_500n);
+    transactional(prisma);
+    let session: any = closedSession();
+    prisma.tellerSession.findUniqueOrThrow.mockImplementation(() => Promise.resolve(session));
+    prisma.tellerSession.update.mockImplementation(({ data }: any) => {
+      session = { ...session, ...data };
+      return Promise.resolve(session);
+    });
+    const warn = jest.spyOn(logger, 'warn');
+    const svc = new TellerService(prisma, policy);
+    const signOff = (who: AuthenticatedUser, count: bigint) => svc.signOffSession(who, 'sess-1', count).catch((e: any) => e);
+
+    expect((await signOff(checker, 100_200n)).errorCode).toBe('COUNT_MISMATCH');
+    expect(session).toEqual(expect.objectContaining({ disputedCount: 100_200n, disputedBy: 'checker' }));
+    // The same supervisor can never supply both counts
+    expect((await signOff(checker, 100_200n)).errorCode).toBe('COUNT_MISMATCH');
+    // ...and the teller can never settle their own session
+    expect(await signOff({ ...teller, role: 'BANK_ADMIN' }, 100_200n)).toBeInstanceOf(ForbiddenError);
+    expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+
+    const done: any = await signOff(admin, 100_200n);
+    expect(done).toEqual(
+      expect.objectContaining({ status: 'RECONCILED', declaredClosing: '100000', disputedCount: '100200', expectedClosing: '100500', discrepancy: '-300', signedOffBy: 'admin' })
+    );
+    const entries = prisma.ledgerEntry.create.mock.calls.map(([{ data }]: any) => [data.accountId, data.entryType, data.amount]);
+    expect(entries).toEqual([
+      [VAULT.id, 'DEBIT', 100_200n], // the supervisors' agreed count goes back to the vault
+      [DRAWER.id, 'CREDIT', 100_200n],
+      [SUSPENSE.id, 'DEBIT', 300n], // difference to the ledger, exactly as for an agreed close
+      [DRAWER.id, 'CREDIT', 300n],
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ alert: 'TELLER_DECLARATION_DISPUTED', sessionId: 'sess-1' }), expect.any(String));
+    warn.mockRestore();
+  });
+
+  it('DISPUTE: a third, different count does not settle anything; it replaces the recorded dispute', async () => {
+    const prisma = buildPrisma([], {}, 100_500n);
+    prisma.tellerSession.findUniqueOrThrow.mockResolvedValue(closedSession({ disputedCount: 100_200n, disputedBy: 'checker', disputedAt: new Date() }));
+    const err: any = await new TellerService(prisma, policy).signOffSession(admin, 'sess-1', 100_300n).catch((e) => e);
+    expect(err.errorCode).toBe('COUNT_MISMATCH');
+    expect(prisma.tellerSession.update.mock.calls.at(-1)[0].data).toEqual({ disputedCount: 100_300n, disputedBy: 'admin', disputedAt: expect.any(Date) });
+    expect(prisma.auditLog.create.mock.calls.at(-1)[0].data.details).toEqual(
+      expect.objectContaining({ supervisorCount: '100300', previousDisputedCount: '100200', previousDisputedBy: 'checker' })
+    );
+    expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+  });
+
+  it('RACES: accepting a float and closing a session are conditional on the state that was read', async () => {
+    const prisma = buildPrisma([], {});
+    const issued = { ...openSession(), status: 'ISSUED', openingFloat: 100_000n, openedAt: new Date('2026-10-27T03:00:00Z') };
+    prisma.tellerSession.findFirst.mockResolvedValue(issued);
+    prisma.tellerSession.updateMany.mockResolvedValue({ count: 0 }); // cancelled (or cancelled and reissued) meanwhile
+    const svc = new TellerService(prisma, policy);
+    await expect(svc.acceptFloat(teller, 100_000n)).rejects.toThrow(ConflictError);
+    expect(prisma.tellerSession.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sess-1', status: 'ISSUED', openingFloat: 100_000n, openedAt: issued.openedAt },
+      data: { status: 'OPEN', acceptedAt: expect.any(Date) },
+    });
+
+    prisma.tellerSession.findFirst.mockResolvedValue(openSession());
+    await expect(svc.closeSession(teller, 0n)).rejects.toThrow(ConflictError); // closed twice at once
+    expect(prisma.tellerSession.updateMany).toHaveBeenLastCalledWith({
+      where: { id: 'sess-1', status: 'OPEN' },
+      data: { status: 'CLOSED', declaredClosing: 0n, closedAt: expect.any(Date) },
+    });
+    expect(prisma.tellerSession.update).not.toHaveBeenCalled();
+  });
+
+  it('TELLER VIEWS: never the drawer account or any count; the issued float stays hidden until the teller has counted it', async () => {
+    const prisma = buildPrisma([], {});
+    const svc = new TellerService(prisma, policy);
+    const full = { ...closedSession(), expectedClosing: 1n, discrepancy: 1n, disputedCount: 2n, disputedBy: 'checker', acceptedAt: new Date(), openedAt: new Date() };
+
+    prisma.tellerSession.findFirst.mockResolvedValue({ ...full, status: 'ISSUED', openingFloat: 100_000n });
+    const accepted: any = await svc.acceptFloat(teller, 100_000n);
+    expect(Object.keys(accepted).sort()).toEqual(TELLER_VIEW_FIELDS);
+    expect(accepted).toEqual(expect.objectContaining({ status: 'OPEN', openingFloat: '100000' }));
+
+    prisma.tellerSession.findFirst.mockResolvedValue({ ...full, status: 'OPEN' });
+    prisma.cashOperation.count.mockResolvedValue(0);
+    const closed: any = await svc.closeSession(teller, 100_000n);
+    expect(Object.keys(closed).sort()).toEqual(TELLER_VIEW_FIELDS);
+    expect(closed.status).toBe('CLOSED');
+
+    prisma.tellerSession.findUnique.mockResolvedValue({ ...full, status: 'ISSUED', openingFloat: 100_000n });
+    const issued: any = await svc.currentSession(teller);
+    expect(Object.keys(issued).sort()).toEqual(TELLER_VIEW_FIELDS);
+    expect(issued.openingFloat).toBeNull(); // the acceptance count is blind too
+  });
+
+  it("CURRENT SESSION: today's session, else the latest unfinished one, else null", async () => {
+    const prisma = buildPrisma([], {});
+    const svc = new TellerService(prisma, policy);
+    prisma.tellerSession.findUnique.mockResolvedValue({ ...closedSession(), status: 'RECONCILED' });
+    expect((await svc.currentSession(teller))?.status).toBe('RECONCILED');
+    expect(prisma.tellerSession.findUnique).toHaveBeenCalledWith({
+      where: { tellerId_businessDate: { tellerId: 'teller', businessDate: istBusinessDate() } },
+    });
+
+    prisma.tellerSession.findUnique.mockResolvedValue(null);
+    prisma.tellerSession.findFirst.mockResolvedValue({ ...closedSession(), businessDate: '2026-10-26' });
+    expect((await svc.currentSession(teller))?.businessDate).toBe('2026-10-26');
+    expect(prisma.tellerSession.findFirst).toHaveBeenLastCalledWith({
+      where: { tellerId: 'teller', status: { in: ['ISSUED', 'OPEN', 'CLOSED'] } },
+      orderBy: [{ businessDate: 'desc' }, { openedAt: 'desc' }],
+    });
+
+    prisma.tellerSession.findFirst.mockResolvedValue(null);
+    expect(await svc.currentSession(teller)).toBeNull();
   });
 });
 
