@@ -57,7 +57,10 @@ export function createApp(prisma: PrismaClient, deps: AccountAppDeps) {
       paths: {
         '/api/v1/accounts': {
           post: { summary: 'Open an account (requires VERIFIED KYC)' },
-          get: { summary: 'List accounts (customers: own; staff: ?customerId=)' },
+          get: { summary: 'List accounts (customers: own; staff: ?customerId=, logged)' },
+        },
+        '/api/v1/accounts/lookup': {
+          get: { summary: 'Staff: identify an account by ?accountNumber= (12 digits); logged' },
         },
         '/api/v1/accounts/{accountId}': {
           get: { summary: 'Get bank account details by ID' },

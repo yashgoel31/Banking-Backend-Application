@@ -81,6 +81,21 @@ model AuditLog {
   @@map("audit_log")
 }
 
+// Who on staff looked at which customer's accounts, and when (append-only)
+model StaffAccessLog {
+  id         String   @id @default(uuid())
+  actorId    String   @map("actor_id")
+  actorRole  String   @map("actor_role")
+  customerId String   @map("customer_id")
+  accountId  String?  @map("account_id")
+  action     String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([customerId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("account_staff_access_log")
+}
+
 // Leader election for periodic jobs across replicas (see acquireJobLease in @banksphere/common)
 model JobLease {
   name      String   @id
