@@ -129,7 +129,7 @@ export class AuthController {
 
   public mfaSetup = wrap(async (req, res) => {
     const { password, enrolmentToken } = mfaSetupSchema.parse(req.body);
-    const result = await this.authService.beginMfaSetup(getAuthenticatedUser(req), password, enrolmentToken);
+    const result = await this.authService.beginMfaSetup(getAuthenticatedUser(req), password, enrolmentToken, loginContext(req));
     res.status(200).json({ success: true, data: result });
   });
 
@@ -152,7 +152,7 @@ export class AuthController {
 
   public mfaDisable = wrap(async (req, res) => {
     const { password, code } = mfaDisableSchema.parse(req.body);
-    await this.authService.disableMfa(getAuthenticatedUser(req), password, code);
+    await this.authService.disableMfa(getAuthenticatedUser(req), password, code, loginContext(req));
     res.status(200).json({ success: true, message: 'Two-factor authentication disabled; please sign in again.' });
   });
 
@@ -172,7 +172,7 @@ export class AuthController {
 
   public changePassword = wrap(async (req, res) => {
     const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
-    const tokens = await this.authService.changePassword(getAuthenticatedUser(req), currentPassword, newPassword);
+    const tokens = await this.authService.changePassword(getAuthenticatedUser(req), currentPassword, newPassword, loginContext(req));
     res.status(200).json({ success: true, data: { tokens } });
   });
 

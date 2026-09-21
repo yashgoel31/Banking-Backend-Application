@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import Redis from 'ioredis';
+import { ServiceUnavailableError } from '@banksphere/common';
 
 /**
  * Per-account abuse controls.
@@ -11,7 +12,9 @@ import Redis from 'ioredis';
  * The attempt is counted BEFORE the password is checked (atomic INCR); a successful login refunds it.
  *
  * MFA challenges allow a fixed number of attempts, counted atomically BEFORE the code is verified, and a
- * per-user TOTP failure budget (not reset by a correct password) stops brute force across challenges.
+ * per-user TOTP failure budget (not reset by a correct password) stops brute force across challenges. Every
+ * TOTP check reserves one unit of that budget BEFORE verifying (atomic INCR), so concurrent guesses can't all
+ * pass a "not locked yet" check; a correct code clears it.
  *
  * Storage: high-churn counters live in the evictable rate-limit Redis (so a spray of random emails can't
  * fill the security Redis); challenges and known networks live in the durable security Redis.
@@ -34,10 +37,19 @@ export interface AuthSecurityStore {
   /** Atomically counts an attempt; returns the challenge if it is valid and under its limit */
   consumeMfaChallengeAttempt(token: string): Promise<MfaChallenge | null>;
   deleteMfaChallenge(token: string): Promise<void>;
-  /** Per-user TOTP failures in a rolling hour; returns the new count */
-  recordMfaFailure(userId: string): Promise<number>;
-  isMfaLocked(userId: string): Promise<boolean>;
+  /**
+   * Counts a TOTP attempt against the user's hourly failure budget before the code is checked. The
+   * reservation stands as a failure unless the code is correct (then clearMfaFailures).
+   */
+  reserveMfaAttempt(userId: string): Promise<MfaAttemptReservation>;
   clearMfaFailures(userId: string): Promise<void>;
+}
+
+export interface MfaAttemptReservation {
+  /** False when the budget is already spent: refuse without checking the code */
+  allowed: boolean;
+  /** This attempt is the last one in the budget: if it fails, TOTP is locked for the user */
+  last: boolean;
 }
 
 export interface MfaChallenge {
@@ -157,14 +169,13 @@ export class RedisAuthSecurityStore implements AuthSecurityStore {
     await this.state.del(`auth:mfa-challenge:${hash(token)}`);
   }
 
-  public async recordMfaFailure(userId: string): Promise<number> {
+  public async reserveMfaAttempt(userId: string): Promise<MfaAttemptReservation> {
     const key = `auth:mfa-fail:${userId}`;
     const results = await this.counters.multi().incr(key).expire(key, 3600, 'NX').exec();
-    return Number(results?.[0]?.[1] ?? 0);
-  }
-
-  public async isMfaLocked(userId: string): Promise<boolean> {
-    return Number((await this.counters.get(`auth:mfa-fail:${userId}`)) ?? 0) >= this.config.maxMfaFailuresPerHour;
+    const count = Number(results?.[0]?.[1]);
+    // Fail closed: an attempt that couldn't be counted is never verified
+    if (!Number.isInteger(count) || count < 1) throw new ServiceUnavailableError('Verification temporarily unavailable');
+    return { allowed: count <= this.config.maxMfaFailuresPerHour, last: count === this.config.maxMfaFailuresPerHour };
   }
 
   public async clearMfaFailures(userId: string): Promise<void> {
@@ -242,14 +253,10 @@ export class InMemoryAuthSecurityStore implements AuthSecurityStore {
     this.challenges.delete(hash(token));
   }
 
-  public async recordMfaFailure(userId: string): Promise<number> {
+  public async reserveMfaAttempt(userId: string): Promise<MfaAttemptReservation> {
     const n = (this.mfaFailures.get(userId) ?? 0) + 1;
     this.mfaFailures.set(userId, n);
-    return n;
-  }
-
-  public async isMfaLocked(userId: string): Promise<boolean> {
-    return (this.mfaFailures.get(userId) ?? 0) >= this.config.maxMfaFailuresPerHour;
+    return { allowed: n <= this.config.maxMfaFailuresPerHour, last: n === this.config.maxMfaFailuresPerHour };
   }
 
   public async clearMfaFailures(userId: string): Promise<void> {
