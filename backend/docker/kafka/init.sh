@@ -12,7 +12,7 @@ printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config
 topics() { "$BIN/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" --command-config "$CFG" "$@"; }
 acl() { "$BIN/kafka-acls.sh" --bootstrap-server "$BOOTSTRAP" --command-config "$CFG" --add --force "$@" >/dev/null; }
 
-EVENTS="user.registered.v1 account.created.v1 account.status.changed.v1 transaction.completed.v1 fraud.alert.created.v1 withdrawal.code.created.v1"
+EVENTS="user.registered.v1 account.created.v1 account.status.changed.v1 transaction.completed.v1 fraud.alert.created.v1 withdrawal.code.created.v1 beneficiary.added.v1"
 # Topics each consuming service subscribes to
 FRAUD_TOPICS="transaction.completed.v1"
 NOTIFICATION_TOPICS="$EVENTS"
@@ -56,6 +56,7 @@ produce account-svc account.created.v1
 produce account-svc account.status.changed.v1
 produce ledger-svc  transaction.completed.v1
 produce ledger-svc  withdrawal.code.created.v1
+produce ledger-svc  beneficiary.added.v1
 produce fraud-svc   fraud.alert.created.v1
 for u in auth-svc account-svc ledger-svc fraud-svc notification-svc; do idempotent "$u"; done
 
