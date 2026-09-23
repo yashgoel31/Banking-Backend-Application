@@ -193,6 +193,7 @@ model AuditLog {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([actorId, createdAt])
+  @@index([action, targetId, createdAt]) // failure counters, e.g. wrong withdrawal codes per account
   @@map("audit_log")
 }
 
