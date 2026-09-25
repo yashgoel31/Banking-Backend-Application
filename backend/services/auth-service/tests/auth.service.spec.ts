@@ -340,6 +340,29 @@ describe('AuthService', () => {
       expect(await tokenState.isAccessTokenRevoked({ userId: 'u1', jti: 'old', tokenVersion: 0 })).toBe(true);
     });
 
+    it('ENROLMENT RACE: the continuing session is issued inside the enrolment transaction, so a concurrent reset revokes it', async () => {
+      const secret = generateTotpSecret();
+      prisma.user.findUnique.mockResolvedValue(activeUser({ mfaPendingSecretEnc: encryptSecret(secret, 'u1') }));
+      prisma.user.update.mockImplementation(({ data }: any) => activeUser({ ...data, tokenVersion: 1 }));
+      prisma.refreshToken.findFirst.mockResolvedValue({ id: 'rt-current', familyId: 'fam-1', familyExpiresAt: new Date(Date.now() + 86400_000) });
+      // Track whether each refresh token is written while the user row lock is held (inside the transaction)
+      let inTransaction = false;
+      const runTransaction = prisma.$transaction;
+      prisma.$transaction = jest.fn(async (arg: any) => {
+        inTransaction = true;
+        try {
+          return await runTransaction(arg);
+        } finally {
+          inTransaction = false;
+        }
+      });
+      const writtenInTransaction: boolean[] = [];
+      prisma.refreshToken.create.mockImplementation(() => writtenInTransaction.push(inTransaction));
+
+      await authService.enableMfa(customer, totpAt(secret, currentStep()));
+      expect(writtenInTransaction).toEqual([true]);
+    });
+
     it('STAFF ENROLMENT: staff need a one-time enrolment token, so a stolen password alone cannot enrol MFA', async () => {
       const passwordHash = await PasswordService.hash('Password1234');
       const teller = { id: 'u1', email: 't@bank.com', role: 'TELLER' as const, sessionId: 'fam-1' };
