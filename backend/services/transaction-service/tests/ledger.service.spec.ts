@@ -111,6 +111,7 @@ function buildPrisma(rows: any[], owners: Record<string, string>, drawerBalance 
       findUnique: jest.fn().mockResolvedValue({ id: 'b1', revokedAt: null, activatesAt: new Date(Date.now() - 2 * 86400_000) }),
       count: jest.fn().mockResolvedValue(0),
       create: jest.fn(({ data }: any) => ({ id: 'b-new', createdAt: new Date(), ...data })),
+      update: jest.fn(({ where, data }: any) => ({ id: where.id, createdAt: new Date(), ...data })),
     },
     tellerSession: {
       findFirst: jest.fn().mockResolvedValue(openSession()),
@@ -286,6 +287,28 @@ describe('LedgerService: transfers', () => {
     fresh.beneficiary.findUnique.mockResolvedValue({ revokedAt: null, activatesAt: new Date(Date.now() - 3600_000) });
     fresh.transaction.aggregate.mockResolvedValue({ _sum: { amount: 4_000_000n } });
     expect(await transfer(fresh, 2_000_000n)).toBe('NEW_BENEFICIARY_LIMIT');
+  });
+
+  it('NEW PAYEE CAP: removing and re-adding a payee does not reset it (trailing 24h), and it is summed before the row locks', async () => {
+    const rows = [row('acc-1', 50_000_000n, 'alice', { daily_limit: 50_000_000n }), row('acc-2', 0n, 'bob')];
+    const prisma = buildPrisma(rows, { 'acc-1': 'alice' });
+    prisma.beneficiary.findUnique.mockResolvedValue({ id: 'b1', revokedAt: null, activatesAt: new Date(Date.now() - 10 * 60_000) }); // re-added 10 min ago
+    prisma.transaction.aggregate.mockResolvedValue({ _sum: { amount: 4_000_000n } }); // sent before the re-add
+    const err: any = await new LedgerService(prisma, policy)
+      .executeTransfer({ sourceAccountId: 'acc-1', destinationAccountId: 'acc-2', amountInPaise: 2_000_000n }, alice)
+      .catch((e) => e);
+    expect(err.errorCode).toBe('NEW_BENEFICIARY_LIMIT');
+
+    const [{ where }] = prisma.transaction.aggregate.mock.calls[0];
+    expect(where).toEqual({ type: 'TRANSFER', initiatedBy: 'alice', destinationAccountId: 'acc-2', createdAt: { gte: expect.any(Date) } });
+    expect(Math.abs(Date.now() - 24 * 3600_000 - where.createdAt.gte.getTime())).toBeLessThan(5_000);
+    const rowLock = prisma.$queryRaw.mock.calls.findIndex(([s]: any) => s.join('').includes('FOR UPDATE'));
+    expect(prisma.transaction.aggregate.mock.invocationCallOrder[0]).toBeLessThan(prisma.$queryRaw.mock.invocationCallOrder[rowLock]);
+
+    // An established payee (activated over a day ago) is not summed at all
+    const established = buildPrisma(rows, { 'acc-1': 'alice' });
+    await new LedgerService(established, policy).executeTransfer({ sourceAccountId: 'acc-1', destinationAccountId: 'acc-2', amountInPaise: 2_000_000n }, alice);
+    expect(established.transaction.aggregate).not.toHaveBeenCalled();
   });
 
   it('transfers between the customer\'s own accounts need no beneficiary', async () => {
@@ -696,6 +719,7 @@ describe('BeneficiaryService', () => {
   it('a payee is active immediately only with recent strong auth; otherwise there is a cooling-off period', async () => {
     const rows = [row('acc-2', 0n, 'bob', { account_number: '100100000002' })];
     const prisma = buildPrisma(rows, {});
+    prisma.beneficiary.findUnique.mockResolvedValue(null);
     const svc = new BeneficiaryService(prisma, policy);
     const activatesAt = async (actor: AuthenticatedUser) => {
       await svc.add(actor, '100100000002', 'Bob');
@@ -713,6 +737,82 @@ describe('BeneficiaryService', () => {
     await expect(svc.add(alice, '100100000001', 'Me')).rejects.toThrow();
     await expect(svc.add(alice, '999999999999', 'Nobody')).rejects.toThrow();
     expect(prisma.beneficiary.create).not.toHaveBeenCalled();
+  });
+
+  const BOB_NUMBER = '100100000002';
+  const bobRows = () => [row('acc-2', 0n, 'bob', { account_number: BOB_NUMBER })];
+  const ADD_ATTEMPTS = ['BENEFICIARY_ADDED', 'BENEFICIARY_READDED', 'BENEFICIARY_LOOKUP_FAILED'];
+
+  it('ADD: the payee, its audit row and a beneficiary.added.v1 event commit together, one add at a time per customer', async () => {
+    const prisma = buildPrisma(bobRows(), {});
+    prisma.beneficiary.findUnique.mockResolvedValue(null);
+    const db = transactional(prisma);
+    const added = await new BeneficiaryService(prisma, policy).add(alice, BOB_NUMBER, 'Bob');
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.secondConnection).toEqual([]);
+    expect(db.audits()).toEqual(['BENEFICIARY_ADDED']);
+    expect(db.committed('outboxEvent', 'create').map((e) => e.data)).toEqual([
+      {
+        aggregateType: 'BENEFICIARY',
+        aggregateId: 'b-new',
+        eventType: 'beneficiary.added.v1',
+        status: 'PENDING',
+        payload: {
+          eventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          eventType: 'beneficiary.added.v1',
+          timestamp: expect.any(String),
+          customerId: 'alice',
+          beneficiaryId: 'b-new',
+          accountNumberLast4: '0002',
+          nickname: 'Bob',
+          activatesAt: added.activatesAt.toISOString(),
+        },
+      },
+    ]);
+    // Serialised per customer before the daily count, so parallel adds can't race past the cap
+    const lock = prisma.$queryRaw.mock.calls.findIndex(([s, key]: any) => s.join('').includes('pg_advisory_xact_lock') && key === 'beneficiaries:alice');
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(prisma.$queryRaw.mock.invocationCallOrder[lock]).toBeLessThan(prisma.auditLog.count.mock.invocationCallOrder[0]);
+    expect(prisma.auditLog.count).toHaveBeenCalledWith({
+      where: { actorId: 'alice', action: { in: ADD_ATTEMPTS }, createdAt: { gte: expect.any(Date) } },
+    });
+
+    // Atomic: if the event can't be staged, nothing is added
+    prisma.outboxEvent.create.mockRejectedValueOnce(new Error('db down'));
+    await expect(new BeneficiaryService(prisma, policy).add(alice, BOB_NUMBER, 'Bob')).rejects.toThrow('db down');
+    expect(db.committed('beneficiary', 'create')).toHaveLength(1);
+  });
+
+  it('RE-ADD: re-adding a removed payee restarts cooling-off and is audited, announced and counted like an add', async () => {
+    const prisma = buildPrisma(bobRows(), {});
+    prisma.beneficiary.findUnique.mockResolvedValue({ id: 'b1', revokedAt: new Date(), activatesAt: new Date(Date.now() - 5 * 86400_000) });
+    const db = transactional(prisma);
+    const readded: any = await new BeneficiaryService(prisma, policy).add(aliceNoMfa, BOB_NUMBER, 'Bob again');
+
+    expect(prisma.beneficiary.update).toHaveBeenCalledWith({
+      where: { id: 'b1' },
+      data: { revokedAt: null, nickname: 'Bob again', activatesAt: expect.any(Date) },
+    });
+    expect(readded.activatesAt.getTime()).toBeGreaterThan(Date.now() + 59 * 60_000);
+    expect(db.audits()).toEqual(['BENEFICIARY_READDED']);
+    expect(db.committed('outboxEvent', 'create')[0].data.payload).toEqual(
+      expect.objectContaining({ eventType: 'beneficiary.added.v1', beneficiaryId: 'b1', nickname: 'Bob again', accountNumberLast4: '0002' })
+    );
+  });
+
+  it('PROBING: failed lookups are committed and count towards the daily add attempts', async () => {
+    const prisma = buildPrisma([], {});
+    const db = transactional(prisma);
+    const svc = new BeneficiaryService(prisma, policy);
+    prisma.auditLog.count.mockResolvedValue(3);
+    expect((await svc.add(alice, '999999999999', 'Probe').catch((e) => e)).errorCode).toBe('INVALID_DESTINATION');
+    expect(db.audits()).toEqual(['BENEFICIARY_LOOKUP_FAILED']);
+    expect(db.committed('auditLog', 'create')[0].data).toEqual(expect.objectContaining({ actorId: 'alice', targetId: '999999999999' }));
+
+    prisma.auditLog.count.mockResolvedValue(policy.maxNewBeneficiariesPerDay);
+    expect((await svc.add(alice, '999999999999', 'Probe').catch((e) => e)).errorCode).toBe('RATE_LIMIT_EXCEEDED');
+    expect(prisma.ledgerAccount.findUnique).toHaveBeenCalledTimes(1); // capped before any lookup
   });
 });
 
