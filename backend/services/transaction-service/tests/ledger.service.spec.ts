@@ -816,6 +816,63 @@ describe('BeneficiaryService', () => {
   });
 });
 
+describe('LedgerService: reads and reconciliation', () => {
+  const support: AuthenticatedUser = { id: 'support', email: 'support@bank.com', role: 'SUPPORT', mfa: true };
+
+  it('CASH ACCOUNTS: drawers (and vault/suspense) are not readable through balance/history, except by BANK_ADMIN (audited)', async () => {
+    const prisma = buildPrisma([], {});
+    prisma.ledgerAccount.findUnique.mockResolvedValue({ id: 'drawer-teller', customerId: 'teller', kind: 'TELLER_CASH', balance: 5_000n, currency: 'INR' });
+    prisma.ledgerEntry.findMany.mockResolvedValue([]);
+    const svc = new LedgerService(prisma, policy);
+    for (const actor of [teller, support, alice]) {
+      await expect(svc.getAccountBalance('drawer-teller', actor)).rejects.toThrow(NotFoundError);
+      await expect(svc.getTransactionHistory('drawer-teller', actor)).rejects.toThrow(NotFoundError);
+    }
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+
+    expect((await svc.getAccountBalance('drawer-teller', admin)).balanceInPaise).toBe('5000');
+    await svc.getTransactionHistory('drawer-teller', admin);
+    expect(prisma.auditLog.create.mock.calls.map(([{ data }]: any) => [data.actorId, data.action, data.targetId])).toEqual([
+      ['admin', 'STAFF_VIEW_BALANCE', 'drawer-teller'],
+      ['admin', 'STAFF_VIEW_HISTORY', 'drawer-teller'],
+    ]);
+
+    // Customer accounts are unchanged: the owner, or any staff member (audited)
+    prisma.ledgerAccount.findUnique.mockResolvedValue({ id: 'acc-1', customerId: 'alice', kind: 'CUSTOMER', balance: 1n, currency: 'INR' });
+    expect((await svc.getAccountBalance('acc-1', alice)).balanceInPaise).toBe('1');
+    expect((await svc.getAccountBalance('acc-1', support)).balanceInPaise).toBe('1');
+    await expect(svc.getAccountBalance('acc-1', mallory)).rejects.toThrow(NotFoundError);
+  });
+
+  it('RECONCILIATION: one snapshot with its own statement timeout, below the transaction timeout', async () => {
+    const prisma = buildPrisma([], {});
+    prisma.$queryRaw.mockImplementation((strings: TemplateStringsArray) => {
+      const sql = strings.join('?');
+      if (sql.includes('unbalanced')) return Promise.resolve([{ unbalanced: 0n }]);
+      if (sql.includes('AS customers')) return Promise.resolve([{ customers: 10n, drawers: 10n, count: 3n }]);
+      return Promise.resolve([]);
+    });
+    const result = await new LedgerService(prisma, policy).reconcileBalances();
+    expect(result).toEqual({ checked: 3, mismatches: [], unbalancedTransactions: 0, zeroSumDelta: '0' });
+    expect(prisma.$executeRaw.mock.calls[0][0].join('')).toBe("SET LOCAL statement_timeout = '110s'");
+    expect(prisma.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(prisma.$queryRaw.mock.invocationCallOrder[0]);
+    expect(prisma.$transaction.mock.calls[0][1]).toEqual(expect.objectContaining({ isolationLevel: 'RepeatableRead', timeout: 120_000 }));
+  });
+
+  it('RECONCILIATION: a run that fails (e.g. a statement timeout) raises LEDGER_RECONCILIATION_ERROR', async () => {
+    const prisma = buildPrisma([], {});
+    prisma.$queryRaw.mockImplementation((strings: TemplateStringsArray) =>
+      strings.join('?').includes('job_leases')
+        ? Promise.resolve([{ holder: 'this-replica' }])
+        : Promise.reject(new Error('canceling statement due to statement timeout'))
+    );
+    const error = jest.spyOn(logger, 'error');
+    await expect(new LedgerService(prisma, policy).runScheduledReconciliation(1200)).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ alert: 'LEDGER_RECONCILIATION_ERROR' }), expect.any(String));
+    error.mockRestore();
+  });
+});
+
 describe('LedgerService: account control state', () => {
   it('refuses to close an account with money, under the row lock', async () => {
     const prisma = buildPrisma([row('acc-1', 5n, 'alice')], {});

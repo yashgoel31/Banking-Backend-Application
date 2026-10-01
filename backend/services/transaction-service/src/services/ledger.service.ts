@@ -1,5 +1,5 @@
 import { Beneficiary, PrismaClient, Prisma } from '../../generated/client';
-import { AuthenticatedUser, ConflictError, HttpError, isStaff, logger } from '@banksphere/common';
+import { AuthenticatedUser, ConflictError, HttpError, acquireJobLease, isStaff, logger } from '@banksphere/common';
 import {
   TransferDTO,
   TransactionResult,
@@ -227,9 +227,16 @@ export class LedgerService {
   // Reads
   // ---------------------------------------------------------------------------
 
+  /**
+   * Customer accounts: the owner or staff. Cash accounts (teller drawers, vault, suspense) only to a
+   * BANK_ADMIN: a teller must not learn their drawer's expected cash before the blind closing count.
+   */
   private async getReadableAccount(accountId: string, actor: AuthenticatedUser, action: string) {
     const account = await this.prisma.ledgerAccount.findUnique({ where: { id: accountId } });
-    if (!account || (account.customerId !== actor.id && !isStaff(actor))) {
+    const readable =
+      account &&
+      (account.kind === 'CUSTOMER' ? account.customerId === actor.id || isStaff(actor) : actor.role === 'BANK_ADMIN');
+    if (!account || !readable) {
       throw new NotFoundError('Account not found');
     }
     if (account.customerId !== actor.id) {
@@ -398,6 +405,9 @@ export class LedgerService {
     // One REPEATABLE READ snapshot, so all three checks see the same instant even while money moves
     return this.prisma.$transaction(
       async (tx) => {
+    // Full scans: the app role's 30s statement_timeout is meant for request paths. This transaction gets
+    // its own, just below its 120s transaction timeout (scale follow-up: reconcile incrementally)
+    await tx.$executeRaw`SET LOCAL statement_timeout = '110s'`;
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT a.id
       FROM ledger_accounts a
@@ -432,6 +442,26 @@ export class LedgerService {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, timeout: 120_000, maxWait: 10_000 }
     );
+  }
+
+  private reconciling = false;
+
+  /**
+   * Periodic job: one replica at a time (lease) and one run at a time per process. A reconciliation that
+   * cannot run (timeout, lost connection, ...) is itself an alert: silence must not look like "balanced".
+   */
+  public async runScheduledReconciliation(leaseSeconds: number): Promise<void> {
+    if (this.reconciling) return;
+    this.reconciling = true;
+    try {
+      if (!(await acquireJobLease(this.prisma, 'ledger-reconcile', leaseSeconds))) return;
+      const r = await this.reconcileBalances();
+      logger.info({ checked: r.checked, mismatches: r.mismatches.length, zeroSumDelta: r.zeroSumDelta }, 'Ledger reconciliation done');
+    } catch (err) {
+      logger.error({ err, alert: 'LEDGER_RECONCILIATION_ERROR' }, 'Ledger reconciliation could not run');
+    } finally {
+      this.reconciling = false;
+    }
   }
 
 }
