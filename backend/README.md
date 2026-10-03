@@ -163,7 +163,7 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 
 | Method & path | Who |
 |---|---|
-| `POST /api/v1/auth/register` → 202, verification email | public |
+| `POST /api/v1/auth/register` → 202, verification email (`STAFF_EMAIL_DOMAIN` addresses get the same 202 but no account) | public |
 | `POST /api/v1/auth/email/verify` `{token}` · `POST /api/v1/auth/email/resend-verification` `{email}` | public |
 | `POST /api/v1/auth/login` → tokens, or `{mfaRequired, challengeToken}` · `POST /api/v1/auth/login/mfa` `{challengeToken, code}` | public |
 | `POST /api/v1/auth/refresh` (409 `REFRESH_IN_PROGRESS` if another tab just refreshed) · `POST /api/v1/auth/logout` | public |

@@ -152,11 +152,11 @@ describe('AuthService', () => {
     it('creates an unverified CUSTOMER, stages user.registered.v1, audits and emails a verification link', async () => {
       prisma.user.create.mockImplementation(({ data }: any) => activeUser({ ...data, isEmailVerified: false }));
 
-      const result = await authService.register({ email: 'Alice@Bank.com', password: 'Password1234' });
+      const result = await authService.register({ email: 'Alice@Example.com', password: 'Password1234' });
       await authService.drainBackgroundTasks();
 
       expect(result).not.toHaveProperty('tokens');
-      expect(prisma.user.create.mock.calls[0][0].data).toEqual(expect.objectContaining({ email: 'alice@bank.com', role: 'CUSTOMER' }));
+      expect(prisma.user.create.mock.calls[0][0].data).toEqual(expect.objectContaining({ email: 'alice@example.com', role: 'CUSTOMER' }));
       expect(prisma.outboxEvent.create.mock.calls[0][0].data.eventType).toBe('user.registered.v1');
       expect(prisma.auditLog.create).toHaveBeenCalled();
       const raw = tokenFromEmail(mailer.sent[0].text);
@@ -165,16 +165,37 @@ describe('AuthService', () => {
 
     it('PRIVILEGE ESCALATION: always creates CUSTOMER even if a role is supplied', async () => {
       prisma.user.create.mockImplementation(({ data }: any) => activeUser(data));
-      await authService.register({ email: 'm@bank.com', password: 'Password1234', role: 'BANK_ADMIN' } as any);
+      await authService.register({ email: 'm@example.com', password: 'Password1234', role: 'BANK_ADMIN' } as any);
       expect(prisma.user.create.mock.calls[0][0].data.role).toBe('CUSTOMER');
     });
 
     it('ENUMERATION: an existing email gets the same response and a notice instead of a new account', async () => {
       prisma.user.create.mockRejectedValue(Object.assign(new Error('unique'), { code: 'P2002' }));
-      const result = await authService.register({ email: 'alice@bank.com', password: 'Password1234' });
+      const result = await authService.register({ email: 'alice@example.com', password: 'Password1234' });
       await authService.drainBackgroundTasks();
       expect(result.message).toMatch(/Registration received/);
       expect(mailer.sent[0].subject).toMatch(/Sign-up attempt/);
+    });
+
+    it('STAFF DOMAIN: a staff-domain address cannot self-register (squatting a future staff email), with the same answer', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.user.create.mockImplementation(({ data }: any) => activeUser({ ...data, isEmailVerified: false }));
+      const staff = await authService.register({ email: 'Future.Teller@Bank.com', password: 'Password1234' });
+      const customer = await authService.register({ email: 'someone@example.com', password: 'Password1234' });
+      await authService.drainBackgroundTasks();
+      expect(staff).toEqual(customer);
+      expect(prisma.user.create).toHaveBeenCalledTimes(1);
+      expect(prisma.user.create.mock.calls[0][0].data.email).toBe('someone@example.com');
+      expect(mailer.sent.filter((m) => m.to === 'future.teller@bank.com')).toHaveLength(0);
+    });
+
+    it('STAFF DOMAIN: an existing staff account just gets the usual sign-up attempt notice', async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser({ email: 'teller@bank.com', role: 'TELLER' }));
+      const result = await authService.register({ email: 'teller@bank.com', password: 'Password1234' });
+      await authService.drainBackgroundTasks();
+      expect(result.message).toMatch(/Registration received/);
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(mailer.sent.map((m) => [m.to, m.subject])).toEqual([['teller@bank.com', expect.stringMatching(/Sign-up attempt/)]]);
     });
   });
 
