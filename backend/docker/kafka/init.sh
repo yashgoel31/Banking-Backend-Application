@@ -3,6 +3,16 @@
 # Runs with the broker-only "admin" principal; services never see the admin password.
 set -euo pipefail
 
+# Refuse empty passwords and unreplaced .env.example placeholders (a CHANGE_ME password is a known password)
+for var in KAFKA_ADMIN_PASSWORD KAFKA_AUTH_PASSWORD KAFKA_ACCOUNT_PASSWORD KAFKA_LEDGER_PASSWORD \
+           KAFKA_FRAUD_PASSWORD KAFKA_NOTIFICATION_PASSWORD; do
+  case "${!var:-}" in
+    ''|*[Cc][Hh][Aa][Nn][Gg][Ee]_[Mm][Ee]*)
+      echo "kafka-init: $var is empty or still the CHANGE_ME placeholder; refusing to provision Kafka" >&2
+      exit 1 ;;
+  esac
+done
+
 BIN=/opt/kafka/bin
 BOOTSTRAP=kafka:29092
 CFG=/tmp/admin.properties
