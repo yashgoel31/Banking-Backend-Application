@@ -148,7 +148,7 @@ Production properties of the compose stack:
 | `AUTH_RATE_LIMIT_MAX` (30), `AUTH_RECOVERY_RATE_LIMIT_MAX` (10), `GATEWAY_RATE_LIMIT_PER_MINUTE` (300) | auth, gateway | Per-IP limits. |
 | `STEP_UP_THRESHOLD_PAISE` (₹1,00,000), `WITHDRAWAL_CODE_STEP_UP_PAISE` (₹25,000) | ledger | Need recent strong authentication (step-up). |
 | `STEP_UP_MAX_AGE_SECONDS` (300), `MFA_FACTOR_MIN_AGE_HOURS` (24) | ledger | Step-up = TOTP verified within this window, on a factor at least this old. |
-| `BENEFICIARY_COOLING_MINUTES` (60), `NEW_BENEFICIARY_LIMIT_PAISE` (₹50,000), `MAX_NEW_BENEFICIARIES_PER_DAY` (10) | ledger | Payee controls. |
+| `BENEFICIARY_COOLING_MINUTES` (60), `NEW_BENEFICIARY_LIMIT_PAISE` (₹50,000), `MAX_NEW_BENEFICIARIES_PER_DAY` (10) | ledger | Payee controls (the daily cap counts adds, re-adds and failed lookups). Ledger policy numbers must be whole numbers: an empty or invalid value stops the service at startup. |
 | `CASH_SINGLE_APPROVAL_LIMIT_PAISE` (₹2,00,000), `TELLER_DAILY_LIMIT_PAISE` (₹10,00,000), `CASH_APPROVAL_TTL_HOURS` (24) | ledger | Maker-checker thresholds. |
 | `CUSTOMER_DAILY_OUTFLOW_LIMIT_PAISE` (₹5,00,000), `WITHDRAWAL_CODE_TTL_MINUTES` (15) | ledger | Outflow controls. |
 | `HIGH_AMOUNT_THRESHOLD_PAISE`, `VELOCITY_*`, `STRUCTURING_MAX_OPS` | fraud | Rule tuning. |
@@ -185,11 +185,13 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 | `POST /api/v1/transactions/transfer` | CUSTOMER: own accounts, or an active beneficiary |
 | `POST /api/v1/transactions/withdrawal-codes` `{accountId, amountInPaise}` → one-time 8-digit code, emailed notice | CUSTOMER (account owner; step-up from ₹25,000) |
 | `POST /api/v1/transactions/teller/sessions` `{tellerId, openingFloatPaise}` · `POST .../:id/cancel` | BANK_ADMIN (issues the float) |
-| `POST /api/v1/transactions/teller/sessions/accept` `{countedFloatPaise}` · `/close` `{countedCashPaise}` (blind) | TELLER |
+| `GET /api/v1/transactions/teller/sessions/current` (today's session, else the latest unfinished one, else `null`; no counts, no float until accepted) | TELLER |
+| `POST /api/v1/transactions/teller/sessions/accept` `{countedFloatPaise}` · `/close` `{countedCashPaise}` (blind; calling `/close` again re-declares the count until sign-off) | TELLER |
 | `POST /api/v1/transactions/deposit` · `POST /api/v1/transactions/withdraw` (`authorizationCode` required) | TELLER (201 executed, or 202 pending approval) |
-| `GET /api/v1/transactions/cash-operations` · `POST .../:id/approve` · `POST .../:id/reject` | BANK_ADMIN (not the requester) |
-| `GET /api/v1/transactions/teller/sessions` · `POST .../:id/sign-off` `{countedCashPaise}` (blind recount) | BANK_ADMIN |
-| `GET /api/v1/transactions/accounts/:id/balance` · `/history?limit&offset` | owner or staff (staff reads audited) |
+| `GET /api/v1/transactions/cash-operations` | BANK_ADMIN, SUPPORT; TELLER (own requests only) |
+| `POST /api/v1/transactions/cash-operations/:id/approve` · `POST .../:id/reject` | BANK_ADMIN (not the requester) |
+| `GET /api/v1/transactions/teller/sessions` (counts hidden until RECONCILED; also SUPPORT) · `POST .../:id/sign-off` `{countedCashPaise}` (blind recount) | BANK_ADMIN |
+| `GET /api/v1/transactions/accounts/:id/balance` · `/history?limit&offset` | owner or staff (staff reads audited); cash accounts (drawers, vault, suspense): BANK_ADMIN only |
 | `GET /api/v1/fraud/alerts` · `PATCH /api/v1/fraud/alerts/:id` · `GET .../:id/history` | FRAUD_ANALYST (reads also BANK_ADMIN, SUPPORT) |
 | `GET /api/v1/notifications/logs` | BANK_ADMIN, SUPPORT, FRAUD_ANALYST |
 
@@ -218,14 +220,19 @@ Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAG
 - **Cash controls**: a cash general ledger (vault, teller drawers, suspense). A supervisor issues each float and
   the teller must count the same amount before it is booked vault → drawer; at close the teller and then the
   supervisor count blind (the teller never sees the expected figure), the counts must agree, the cash returns to
-  the vault and any difference is posted to suspense and alerted. Every cash movement is therefore in the ledger
+  the vault and any difference is posted to suspense and alerted. Until sign-off the teller may re-declare their
+  count; a disagreeing supervisor count is recorded, and the same blind count from a second, different
+  administrator settles the session on the supervisors' count (alert `TELLER_DECLARATION_DISPUTED`). Mismatched
+  counts are always audited. Every cash movement is therefore in the ledger
   and fake deposits surface as a shortage. Withdrawals need the customer's one-time code for the exact amount
   (emailed notice; brute force burns all codes); large or over-budget operations need a second person; a
   cumulative structuring rule flags split cash operations.
 - **Dual control on account and user status**: an account frozen by a staff member, or a user disabled by an
   administrator, can only be reinstated by a different administrator.
 - **Payee controls**: transfers only to own accounts or registered beneficiaries; cooling-off unless added with a fresh step-up;
-  first-day cap per new beneficiary; per-account and per-customer daily outflow limits.
+  first-day cap per new beneficiary (trailing 24 hours, so removing and re-adding a payee doesn't reset it); add attempts
+  capped per day, failed lookups included; every add is announced (`beneficiary.added.v1`); per-account and per-customer
+  daily outflow limits.
 - **Anti-enumeration**: register, login, forgot-password and resend-verification respond identically for
   known and unknown emails (Argon2 always runs; emails are sent after the response); the ledger checks the
   caller's own account before anything about the destination, and every unusable destination looks the same.
