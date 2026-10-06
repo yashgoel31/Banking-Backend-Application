@@ -129,4 +129,74 @@ describe('Customer HTTP routes', () => {
       }
     });
   });
+
+  describe('GET /api/v1/customers (staff search)', () => {
+    const profile = {
+      id: 'cp-1',
+      userId: ALICE,
+      fullName: 'Alice Smith',
+      phoneNumber: '+919876543210',
+      address: null,
+      dateOfBirth: new Date('1990-05-17T00:00:00.000Z'),
+      kycStatus: 'PENDING',
+      version: 3,
+      createdAt: new Date('2026-10-01T10:00:00.000Z'),
+      updatedAt: new Date('2026-10-02T10:00:00.000Z'),
+    };
+
+    it('is for KYC_OFFICER, BANK_ADMIN and SUPPORT only', async () => {
+      for (const role of ['KYC_OFFICER', 'BANK_ADMIN', 'SUPPORT'] as const) {
+        expect({ role, status: (await request(app).get('/api/v1/customers').set('Authorization', `Bearer ${tokenFor(role)}`)).status }).toEqual({ role, status: 200 });
+      }
+      for (const role of ['CUSTOMER', 'TELLER', 'FRAUD_ANALYST'] as const) {
+        expect({ role, status: (await request(app).get('/api/v1/customers').set('Authorization', `Bearer ${tokenFor(role)}`)).status }).toEqual({ role, status: 403 });
+      }
+      expect((await request(app).get('/api/v1/customers')).status).toBe(401);
+    });
+
+    it('returns the same profile shape as GET /customers/:userId, with the pagination used', async () => {
+      prisma.customerProfile.findMany.mockResolvedValue([profile]);
+      prisma.customerProfile.findUnique.mockResolvedValue(profile);
+      const staff = `Bearer ${tokenFor('KYC_OFFICER')}`;
+      const list = await request(app).get('/api/v1/customers?kycStatus=PENDING&q=%20alice%20').set('Authorization', staff);
+      const single = await request(app).get(`/api/v1/customers/${ALICE}`).set('Authorization', staff);
+      expect(list.status).toBe(200);
+      expect(list.body).toEqual({ success: true, data: [single.body.data], pagination: { limit: 20, offset: 0 } });
+      expect(prisma.customerProfile.findMany.mock.calls[0][0].where).toEqual({
+        kycStatus: 'PENDING',
+        OR: [{ fullName: { contains: 'alice', mode: 'insensitive' } }, { phoneNumber: { contains: 'alice' } }],
+      });
+      expect(prisma.staffAccessLog.createMany).toHaveBeenCalledWith({
+        data: [{ actorId: 'kyc_officer-user', actorRole: 'KYC_OFFICER', userId: ALICE, action: 'LIST_CUSTOMERS' }],
+      });
+    });
+
+    it('pagination has the shared caps (limit 100, offset 10000)', async () => {
+      const res = await request(app).get('/api/v1/customers?limit=1000&offset=99999999').set('Authorization', `Bearer ${tokenFor('SUPPORT')}`);
+      expect(res.body.pagination).toEqual({ limit: 100, offset: 10000 });
+      expect(prisma.customerProfile.findMany.mock.calls[0][0]).toEqual(expect.objectContaining({ take: 100, skip: 10000 }));
+    });
+
+    it('validates kycStatus and q (max 100 after trimming; blank means no search)', async () => {
+      const staff = `Bearer ${tokenFor('SUPPORT')}`;
+      expect((await request(app).get('/api/v1/customers?kycStatus=APPROVED').set('Authorization', staff)).status).toBe(400);
+      expect((await request(app).get(`/api/v1/customers?q=${'a'.repeat(101)}`).set('Authorization', staff)).status).toBe(400);
+      expect((await request(app).get('/api/v1/customers?q=a&q=b').set('Authorization', staff)).status).toBe(400);
+      expect((await request(app).get(`/api/v1/customers?q=%20${'a'.repeat(100)}%20`).set('Authorization', staff)).status).toBe(200);
+      prisma.customerProfile.findMany.mockClear();
+      expect((await request(app).get('/api/v1/customers?q=%20%20').set('Authorization', staff)).status).toBe(200);
+      expect(prisma.customerProfile.findMany.mock.calls[0][0].where).toEqual({});
+    });
+
+    it('does not shadow /me or /:userId', async () => {
+      prisma.customerProfile.findUnique.mockResolvedValue(profile);
+      const me = await request(app).get('/api/v1/customers/me').set('Authorization', asAlice);
+      expect(me.status).toBe(200);
+      expect(me.body.data.userId).toBe(ALICE);
+      const byId = await request(app).get(`/api/v1/customers/${ALICE}`).set('Authorization', `Bearer ${tokenFor('SUPPORT')}`);
+      expect(byId.status).toBe(200);
+      expect(prisma.staffAccessLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'VIEW_PROFILE' }) });
+      expect(prisma.customerProfile.findMany).not.toHaveBeenCalled();
+    });
+  });
 });
