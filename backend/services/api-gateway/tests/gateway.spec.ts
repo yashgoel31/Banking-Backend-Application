@@ -114,6 +114,43 @@ describe('API Gateway', () => {
     }
   });
 
+  it('UPSTREAM ABORT: an upstream dying mid-response aborts the client response instead of leaving it hanging', async () => {
+    // Sends headers and part of the body, then drops the connection
+    const dying = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"partial":');
+      setTimeout(() => res.socket?.destroy(), 50);
+    });
+    dying.listen(0);
+    await new Promise((r) => dying.once('listening', r));
+    const gatewayServer = createGateway({
+      routes: [{ name: 'transaction-service', prefix: '/api/v1/transactions', target: `http://127.0.0.1:${(dying.address() as AddressInfo).port}` }],
+    }).listen(0);
+    await new Promise((r) => gatewayServer.once('listening', r));
+    try {
+      const outcome = await new Promise<string>((resolve) => {
+        const timer = setTimeout(() => resolve('hung'), 3000);
+        const req = http.get(`http://127.0.0.1:${(gatewayServer.address() as AddressInfo).port}/api/v1/transactions/accounts/x/history`, (res) => {
+          res.on('data', () => {});
+          res.on('error', () => {});
+          res.on('close', () => {
+            clearTimeout(timer);
+            resolve(res.complete ? 'complete' : 'aborted');
+          });
+        });
+        req.on('error', () => {
+          clearTimeout(timer);
+          resolve('aborted');
+        });
+      });
+      expect(outcome).toBe('aborted');
+    } finally {
+      gatewayServer.closeAllConnections?.();
+      gatewayServer.close();
+      dying.close();
+    }
+  });
+
   it('returns 502 JSON when an upstream is down', async () => {
     const app = createGateway({
       routes: [{ name: 'auth-service', prefix: '/api/v1/auth', target: 'http://127.0.0.1:1' }],
