@@ -46,12 +46,12 @@ export interface LedgerPolicy {
 }
 
 /**
- * Policy numbers come from the environment. Unset means the default; anything else must be a plain
- * whole number within range. An empty string, a typo or a negative value is a configuration error that
- * stops the service at startup, instead of a 0 that silently disables a control or a NaN that fails
- * every request.
+ * Policy numbers (and the service's other numeric settings) come from the environment. Unset means the
+ * default; anything else must be a plain whole number within range. An empty string, a typo or a negative
+ * value is a configuration error that stops the service at startup, instead of a 0 that silently disables
+ * a control or a NaN that fails every request.
  */
-function policyNumber(name: string, fallback: number, min: number): number {
+export function envNumber(name: string, fallback: number, min: number): number {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
   const value = raw.trim();
@@ -75,15 +75,15 @@ export const defaultLedgerPolicy = (): LedgerPolicy => ({
   singleApprovalLimit: policyPaise('CASH_SINGLE_APPROVAL_LIMIT_PAISE', 20_000_000n, 0n), // ₹2,00,000
   tellerDailyLimit: policyPaise('TELLER_DAILY_LIMIT_PAISE', 100_000_000n, 0n), // ₹10,00,000
   customerDailyOutflowLimit: policyPaise('CUSTOMER_DAILY_OUTFLOW_LIMIT_PAISE', 50_000_000n, 1n), // ₹5,00,000
-  approvalTtlHours: policyNumber('CASH_APPROVAL_TTL_HOURS', 24, 1),
+  approvalTtlHours: envNumber('CASH_APPROVAL_TTL_HOURS', 24, 1),
   stepUpThreshold: policyPaise('STEP_UP_THRESHOLD_PAISE', 10_000_000n, 0n), // ₹1,00,000
-  beneficiaryCoolingMinutes: policyNumber('BENEFICIARY_COOLING_MINUTES', 60, 0),
+  beneficiaryCoolingMinutes: envNumber('BENEFICIARY_COOLING_MINUTES', 60, 0),
   newBeneficiaryLimit: policyPaise('NEW_BENEFICIARY_LIMIT_PAISE', 5_000_000n, 0n), // ₹50,000
-  withdrawalCodeTtlMinutes: policyNumber('WITHDRAWAL_CODE_TTL_MINUTES', 15, 1),
+  withdrawalCodeTtlMinutes: envNumber('WITHDRAWAL_CODE_TTL_MINUTES', 15, 1),
   withdrawalCodeStepUpThreshold: policyPaise('WITHDRAWAL_CODE_STEP_UP_PAISE', 2_500_000n, 0n), // ₹25,000
-  stepUpMaxAgeSeconds: policyNumber('STEP_UP_MAX_AGE_SECONDS', 300, 1),
-  mfaFactorMinAgeHours: policyNumber('MFA_FACTOR_MIN_AGE_HOURS', 24, 0),
-  maxNewBeneficiariesPerDay: policyNumber('MAX_NEW_BENEFICIARIES_PER_DAY', 10, 1),
+  stepUpMaxAgeSeconds: envNumber('STEP_UP_MAX_AGE_SECONDS', 300, 1),
+  mfaFactorMinAgeHours: envNumber('MFA_FACTOR_MIN_AGE_HOURS', 24, 0),
+  maxNewBeneficiariesPerDay: envNumber('MAX_NEW_BENEFICIARIES_PER_DAY', 10, 1),
 });
 
 /** Recent TOTP verification on an established factor (see hasRecentStrongAuth) */

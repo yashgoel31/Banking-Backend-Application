@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { LedgerService, startOfIstDay } from '../src/services/ledger.service';
 import { TellerService } from '../src/services/teller.service';
 import { BeneficiaryService } from '../src/services/beneficiary.service';
-import { LedgerPolicy, defaultLedgerPolicy, istBusinessDate } from '../src/services/ledger-core';
+import { LedgerPolicy, defaultLedgerPolicy, envNumber, istBusinessDate } from '../src/services/ledger-core';
 import { IdempotencyService } from '../src/services/idempotency.service';
 import { TransactionController } from '../src/controllers/transaction.controller';
 import {
@@ -912,6 +912,15 @@ describe('Ledger policy configuration', () => {
   ])('refuses to start with %s=%j', (name, value) => {
     process.env[name] = value;
     expect(() => defaultLedgerPolicy()).toThrow(name);
+  });
+
+  it('the service settings outside the policy are validated the same way', () => {
+    delete process.env.RECONCILE_INTERVAL_MS;
+    expect(envNumber('RECONCILE_INTERVAL_MS', 600_000, 1_000)).toBe(600_000);
+    process.env.RECONCILE_INTERVAL_MS = 'ten minutes'; // NaN would make setInterval fire every millisecond
+    expect(() => envNumber('RECONCILE_INTERVAL_MS', 600_000, 1_000)).toThrow('RECONCILE_INTERVAL_MS');
+    process.env.IDEMPOTENCY_TTL_HOURS = '';
+    expect(() => new IdempotencyService({} as any)).toThrow('IDEMPOTENCY_TTL_HOURS');
   });
 });
 
