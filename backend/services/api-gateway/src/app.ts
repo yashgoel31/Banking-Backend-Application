@@ -87,7 +87,8 @@ export function createGateway(options: GatewayOptions = {}) {
     cors({
       origin: corsOrigins.length ? corsOrigins : false,
       methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-      allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'X-Correlation-Id'],
+      // X-Session-Transport: cookie opts a browser into the HttpOnly refresh-token cookie (auth-service)
+      allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'X-Correlation-Id', 'X-Session-Transport'],
       exposedHeaders: ['X-Correlation-Id', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'Retry-After'],
       maxAge: 600,
     })
