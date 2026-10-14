@@ -1,5 +1,6 @@
 import { FraudService } from '../src/services/fraud.service';
 import { CashStructuringRule } from '../src/rules/cash-structuring.rule';
+import { VelocityRule } from '../src/rules/velocity.rule';
 import { RiskLevel, AlertStatus } from '../generated/client';
 import { ConflictError, ForbiddenError } from '@banksphere/common';
 
@@ -25,6 +26,7 @@ describe('FraudService (Risk Engine, Anomaly Detection, and Alerts)', () => {
       },
       fraudAlert: {
         create: jest.fn(({ data }: any) => ({ id: 'alert-1', ...data })),
+        findFirst: jest.fn().mockResolvedValue(null),
         findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(({ data }: any) => ({ id: 'alert-1', ...data })),
@@ -143,6 +145,86 @@ describe('FraudService (Risk Engine, Anomaly Detection, and Alerts)', () => {
     const flagged = await rule.evaluate(cash); // 21,000,000 total across 5 operations
     expect(flagged.triggered).toBe(true);
     expect(mockPrisma.riskAssessment.aggregate.mock.calls.at(-1)[0].where).toEqual(expect.objectContaining({ initiatedBy: 'teller-1', accountId: 'acc-1' }));
+  });
+
+  it('VELOCITY: the window is bounded by the evaluated event (a late replay does not count later transactions)', async () => {
+    const rule = new VelocityRule(mockPrisma, 60, 3);
+    const at = new Date('2026-10-27T10:00:00Z');
+    await rule.evaluate(ctx({ timestamp: at }));
+    expect(mockPrisma.riskAssessment.count).toHaveBeenCalledWith({
+      where: { accountId: 'acc-1', assessedAt: { gte: new Date(at.getTime() - 60_000), lte: at } },
+    });
+  });
+
+  it('VELOCITY ALERT FLOOD: no second alert while an open velocity alert exists for the account; the assessment is still recorded', async () => {
+    mockPrisma.riskAssessment.count.mockResolvedValue(10); // ping-pong transfers: velocity fires every time
+    mockPrisma.fraudAlert.findFirst.mockResolvedValue({ id: 'alert-0' });
+    const result = await fraudService.evaluateTransaction(ctx({ amountInPaise: 1n }), 'evt-pp');
+    expect(result.riskLevel).toBe(RiskLevel.HIGH);
+    expect(result.alertCreated).toBe(false);
+    expect(result.duplicateOfAlertId).toBe('alert-0');
+    expect(mockPrisma.riskAssessment.create).toHaveBeenCalled();
+    expect(mockPrisma.fraudAlert.create).not.toHaveBeenCalled();
+    expect(mockPrisma.outboxEvent.create).not.toHaveBeenCalled(); // so no URGENT email either
+    const where = mockPrisma.fraudAlert.findFirst.mock.calls[0][0].where;
+    expect(where).toEqual(
+      expect.objectContaining({
+        accountId: 'acc-1',
+        status: { in: [AlertStatus.OPEN, AlertStatus.UNDER_REVIEW] },
+        ruleIds: { has: 'RULE_VELOCITY_CHECK' },
+      })
+    );
+    expect(Date.now() - where.createdAt.gte.getTime()).toBeLessThanOrEqual(24 * 3600_000 + 1_000);
+    // Serialised per account, so two concurrent evaluations can't both create the "first" alert
+    expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+  });
+
+  it('VELOCITY ALERT: the first one is created and tagged with its rule', async () => {
+    mockPrisma.riskAssessment.count.mockResolvedValue(10);
+    const result = await fraudService.evaluateTransaction(ctx({ amountInPaise: 1n }), 'evt-v1');
+    expect(result.alertCreated).toBe(true);
+    expect(mockPrisma.fraudAlert.create.mock.calls[0][0].data.ruleIds).toEqual(['RULE_VELOCITY_CHECK']);
+  });
+
+  it('VELOCITY ALERT: another rule firing as well is a new signal and still raises an alert', async () => {
+    mockPrisma.riskAssessment.count.mockResolvedValue(10);
+    mockPrisma.fraudAlert.findFirst.mockResolvedValue({ id: 'alert-0' });
+    const result = await fraudService.evaluateTransaction(ctx({ amountInPaise: 25000000n }), 'evt-v2');
+    expect(result.alertCreated).toBe(true);
+    expect(mockPrisma.fraudAlert.create.mock.calls[0][0].data.ruleIds).toEqual(['RULE_AMOUNT_THRESHOLD', 'RULE_VELOCITY_CHECK']);
+  });
+
+  it('STRUCTURING: cash split across several tellers into one account is flagged (per-account 24h total)', async () => {
+    const rule = new CashStructuringRule(mockPrisma, 20_000_000n, 80n, 2);
+    const cash = ctx({ amountInPaise: 5_000_000n, transactionType: 'DEPOSIT', initiatedBy: 'teller-3', direction: 'INBOUND' });
+    mockPrisma.riskAssessment.aggregate.mockImplementation(async ({ where }: any) =>
+      where.initiatedBy
+        ? { _sum: { amountInPaise: null }, _count: { _all: 0 } } // this teller has done nothing else
+        : { _sum: { amountInPaise: 16_000_000n }, _count: { _all: 4 } } // four deposits by other tellers
+    );
+    const flagged = await rule.evaluate(cash);
+    expect(flagged.triggered).toBe(true);
+    expect(flagged.reason).toMatch(/one account/);
+    const perAccount = mockPrisma.riskAssessment.aggregate.mock.calls.map((c: any[]) => c[0].where).find((w: any) => !w.initiatedBy);
+    expect(perAccount).toEqual(expect.objectContaining({ accountId: 'acc-1', direction: 'INBOUND' }));
+  });
+
+  it('STRUCTURING: several near-limit cash operations on one account by different tellers are flagged', async () => {
+    const rule = new CashStructuringRule(mockPrisma, 20_000_000n, 80n, 2);
+    const cash = ctx({ amountInPaise: 19_000_000n, transactionType: 'DEPOSIT', initiatedBy: 'teller-3', direction: 'INBOUND' });
+    mockPrisma.riskAssessment.count.mockImplementation(async ({ where }: any) => (where.initiatedBy ? 0 : 2));
+    expect((await rule.evaluate(cash)).triggered).toBe(true);
+  });
+
+  it('STRUCTURING: the per-account rule also applies without a known initiator, and windows end at the evaluated event', async () => {
+    const rule = new CashStructuringRule(mockPrisma, 20_000_000n, 80n, 2);
+    const at = new Date('2026-10-27T10:00:00Z');
+    mockPrisma.riskAssessment.aggregate.mockResolvedValue({ _sum: { amountInPaise: 16_000_000n }, _count: { _all: 2 } });
+    const flagged = await rule.evaluate(ctx({ amountInPaise: 5_000_000n, transactionType: 'WITHDRAWAL', direction: 'OUTBOUND', timestamp: at }));
+    expect(flagged.triggered).toBe(true);
+    for (const [arg] of mockPrisma.riskAssessment.aggregate.mock.calls) {
+      expect(arg.where.assessedAt).toEqual({ gte: new Date(at.getTime() - 24 * 3600_000), lte: at });
+    }
   });
 
   it('maps risk scores to levels', () => {

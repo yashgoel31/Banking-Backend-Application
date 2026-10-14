@@ -31,4 +31,6 @@ export interface RiskEvaluationSummary {
   triggeredRules: RiskRuleResult[];
   alertCreated: boolean;
   alertId?: string;
+  /** Set when the alert was suppressed because an open alert already covers it (velocity floods) */
+  duplicateOfAlertId?: string;
 }

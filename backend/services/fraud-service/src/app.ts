@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import Redis from 'ioredis';
 import { PrismaClient } from '../generated/client';
 import {
+  assertNoPlaceholders,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -93,6 +94,7 @@ export function createApp(prisma: PrismaClient, deps: FraudAppDeps) {
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['DATABASE_URL', 'REDIS_URL', 'KAFKA_PASSWORD', 'JWT_VERIFY_KEYS']);
   const prisma = new PrismaClient(prismaClientOptions());
   const redis = await connectRedis();
   const { publisher, kafka } = createEventPublisher(process.env.KAFKA_CLIENT_ID || 'fraud-service');

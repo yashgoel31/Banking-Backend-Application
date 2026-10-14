@@ -3,7 +3,7 @@ import { AuthenticatedUser, ConflictError, ForbiddenError, NotFoundError, logger
 import { PrismaClient, RiskLevel, AlertStatus, FraudAlert, Prisma } from '../../generated/client';
 import { IRiskRule } from '../rules/risk-rule.interface';
 import { AmountThresholdRule } from '../rules/amount-threshold.rule';
-import { VelocityRule } from '../rules/velocity.rule';
+import { VelocityRule, VELOCITY_RULE_ID } from '../rules/velocity.rule';
 import { CashStructuringRule } from '../rules/cash-structuring.rule';
 import {
   TransactionEvaluationContext,
@@ -16,7 +16,9 @@ export class FraudService {
 
   constructor(
     private readonly prisma: PrismaClient,
-    rules?: IRiskRule[]
+    rules?: IRiskRule[],
+    /** While a velocity alert younger than this is open for an account, velocity-only hits raise no new alert */
+    private readonly velocityAlertDedupeMs = Number(process.env.VELOCITY_ALERT_DEDUPE_HOURS || 24) * 3600_000
   ) {
     this.rules = rules || [
       new AmountThresholdRule(BigInt(process.env.HIGH_AMOUNT_THRESHOLD_PAISE || '20000000')),
@@ -99,8 +101,13 @@ export class FraudService {
 
     const { triggeredRules, riskScore, riskLevel } = await this.score(context);
     const shouldAlert = riskLevel === RiskLevel.HIGH || riskLevel === RiskLevel.CRITICAL;
+    const ruleIds = triggeredRules.map((r) => r.ruleId);
+    // Velocity alone says "this account is busy", which stays true for every further transaction of a burst
+    // (e.g. 1-paisa ping-pong): one open alert per account is enough. Any other rule is a new signal.
+    const velocityOnly = ruleIds.length > 0 && ruleIds.every((id) => id === VELOCITY_RULE_ID);
 
     let alert: FraudAlert | null = null;
+    let duplicateOf: string | undefined;
     try {
       alert = await this.prisma.$transaction(async (tx) => {
         await tx.processedEvent.create({ data: { eventId: key, eventType: 'transaction.completed.v1' } });
@@ -121,6 +128,25 @@ export class FraudService {
         });
 
         if (!shouldAlert) return null;
+        if (velocityOnly) {
+          // Serialised per account, so concurrent evaluations can't both raise the "first" alert
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`velocity-alert:${context.accountId}`}, 0))::text`;
+          const open = await tx.fraudAlert.findFirst({
+            where: {
+              accountId: context.accountId,
+              status: { in: [AlertStatus.OPEN, AlertStatus.UNDER_REVIEW] },
+              ruleIds: { has: VELOCITY_RULE_ID },
+              createdAt: { gte: new Date(Date.now() - this.velocityAlertDedupeMs) },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true },
+          });
+          if (open) {
+            // The assessment above records this hit; the open alert already has the analysts' attention
+            duplicateOf = open.id;
+            return null;
+          }
+        }
         const reasons = triggeredRules.map((r) => r.reason).join(' | ');
         const created = await tx.fraudAlert.create({
           data: {
@@ -131,6 +157,7 @@ export class FraudService {
             status: AlertStatus.OPEN,
             initiatedBy: context.initiatedBy,
             cashOperationId: context.cashOperationId,
+            ruleIds,
           },
         });
         await tx.outboxEvent.create({
@@ -168,6 +195,7 @@ export class FraudService {
       triggeredRules,
       alertCreated: Boolean(alert),
       alertId: alert?.id,
+      ...(duplicateOf ? { duplicateOfAlertId: duplicateOf } : {}),
     };
   }
 

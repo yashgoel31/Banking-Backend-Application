@@ -83,10 +83,13 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init-schemas.sh:/docker-entrypoint-initdb.d/10-init-schemas.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      # Over TCP: during first-time initialisation (init-schemas.sh) the server only listens on its unix
+      # socket, so this stays unhealthy until the roles and schemas exist and the real server is up
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 60s
 
   # Security state (token versions, revoked jtis, lockouts): AOF-persisted and never evicted
   redis:
@@ -208,7 +211,13 @@ services:
         for s in AUTH:auth CUSTOMER:customer ACCOUNT:account TRANSACTION:transaction NOTIFICATION:notification FRAUD:fraud; do
           var=$${s%%:*}_URL; svc=$${s##*:}
           echo "Migrating $$svc-service"
-          (cd services/$$svc-service && DATABASE_URL="$$(printenv $$var)" npx prisma migrate deploy)
+          # A few retries ride out a database that is still starting or restarting
+          n=1
+          until (cd services/$$svc-service && DATABASE_URL="$$(printenv $$var)" npx prisma migrate deploy); do
+            if [ $$n -ge 5 ]; then echo "Migrating $$svc-service failed after $$n attempts" >&2; exit 1; fi
+            echo "Migrating $$svc-service failed (attempt $$n), retrying in 5s" >&2
+            n=$$((n + 1)); sleep 5
+          done
         done
     depends_on:
       postgres:
@@ -244,8 +253,9 @@ services:
       customer-service: { condition: service_healthy }
       account-service: { condition: service_healthy }
       transaction-service: { condition: service_healthy }
-      notification-service: { condition: service_healthy }
-      fraud-service: { condition: service_healthy }
+      # Asynchronous (Kafka consumers): an SMTP or consumer problem must not keep the public API down
+      notification-service: { condition: service_started }
+      fraud-service: { condition: service_started }
 
   auth-service:
     <<: *app

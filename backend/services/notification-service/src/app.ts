@@ -4,6 +4,7 @@ import { z } from 'zod';
 import Redis from 'ioredis';
 import { PrismaClient } from '../generated/client';
 import {
+  assertNoPlaceholders,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -102,6 +103,7 @@ export function createApp(prisma: PrismaClient, deps: NotificationAppDeps) {
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['DATABASE_URL', 'REDIS_URL', 'KAFKA_PASSWORD', 'JWT_VERIFY_KEYS', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD']);
   const prisma = new PrismaClient(prismaClientOptions());
   const redis = await connectRedis();
   const { publisher, kafka } = createEventPublisher(process.env.KAFKA_CLIENT_ID || 'notification-service');

@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import { PrismaClient } from '../generated/client';
 import {
   acquireJobLease,
+  assertNoPlaceholders,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -99,6 +100,7 @@ export function createApp(prisma: PrismaClient, deps: AccountAppDeps) {
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['DATABASE_URL', 'REDIS_URL', 'KAFKA_PASSWORD', 'JWT_VERIFY_KEYS', 'LEDGER_INTERNAL_TOKEN', 'CUSTOMER_INTERNAL_TOKEN']);
   const prisma = new PrismaClient(prismaClientOptions());
   const redis = await connectRedis();
   const { app, accountService } = createApp(prisma, { tokenState: new RedisTokenStateStore(redis), redis });
