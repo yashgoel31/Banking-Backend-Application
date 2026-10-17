@@ -102,7 +102,7 @@ single-analyst alert closure and internal-API access. It fails if any request re
 3. Set `APP_BASE_URL` to your frontend. Email links go to `/verify-email`, `/reset-password`, `/staff/activate`
    and `/mfa/enrol`, always as `#token=...` (in the URL fragment, so it never reaches server logs or `Referer`).
 4. Set `STAFF_EMAIL_DOMAIN` (staff must use your corporate domain), **`STAFF_ALLOWED_CIDRS`** (VPN/office
-   ranges allowed to call staff-only APIs) and **`GATEWAY_TRUST_PROXY`** (proxies in front of the gateway that
+   ranges staff may sign in and work from) and **`GATEWAY_TRUST_PROXY`** (proxies in front of the gateway that
    overwrite `X-Forwarded-For`; `0` if none). The services refuse to start in production without them.
 5. `docker compose up -d --build`, then create two bootstrap administrators (see above) and hand each their
    enrolment token out of band. Every further staff member is requested by one administrator, approved by
@@ -152,7 +152,8 @@ Production properties of the compose stack:
 | `EMAIL_TRANSPORT`, `SMTP_*`, `MAIL_FROM` | auth, notification | `console` transport is refused in production. |
 | `APP_BASE_URL` | auth | Frontend base URL for email links. |
 | `STAFF_EMAIL_DOMAIN`, `STAFF_ENROLMENT_TTL_HOURS` (24), `ADMIN_REQUEST_TTL_HOURS` (24) | auth | Staff onboarding. |
-| `STAFF_ALLOWED_CIDRS` | gateway | Networks allowed to call staff-only APIs (empty = unrestricted). |
+| `STAFF_ALLOWED_CIDRS` | all | Networks staff may work from: every service refuses staff tokens from elsewhere (by role, on every route), auth refuses staff sign-in after the password check, and the gateway also blocks staff-only paths. Empty = unrestricted; required in production. |
+| `AUTH_COOKIE_SECURE` (true) | auth | `false` drops `Secure` from the `bs_rt` session cookie (browsers already accept Secure cookies on http://localhost). |
 | `PASSWORD_RESET_TTL_MINUTES` (30), `EMAIL_VERIFICATION_TTL_HOURS` (24), `SESSION_MAX_DAYS` (30) | auth | Token lifetimes. |
 | `LOGIN_MAX_FAILURES` (5), `LOGIN_LOCKOUT_SECONDS` (900), `MFA_MAX_FAILURES_PER_HOUR` (10), `AUTH_EMAILS_PER_HOUR` (3) | auth | Brute-force / mail-bombing controls. |
 | `AUTH_RATE_LIMIT_MAX` (30), `AUTH_RECOVERY_RATE_LIMIT_MAX` (10), `GATEWAY_RATE_LIMIT_PER_MINUTE` (300) | auth, gateway | Per-IP limits. |
@@ -175,19 +176,21 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 
 | Method & path | Who |
 |---|---|
-| `POST /api/v1/auth/register` → 202, verification email | public |
+| `POST /api/v1/auth/register` → 202, verification email (`STAFF_EMAIL_DOMAIN` addresses get the same 202 but no account) | public |
 | `POST /api/v1/auth/email/verify` `{token}` · `POST /api/v1/auth/email/resend-verification` `{email}` | public |
 | `POST /api/v1/auth/login` → tokens, or `{mfaRequired, challengeToken}` · `POST /api/v1/auth/login/mfa` `{challengeToken, code}` | public |
 | `POST /api/v1/auth/refresh` (409 `REFRESH_IN_PROGRESS` if another tab just refreshed) · `POST /api/v1/auth/logout` | public |
+| Browsers: send `X-Session-Transport: cookie` and every token-issuing response (login, login/mfa, refresh, mfa/enable, password/change, staff/activate) sets the refresh token as the `bs_rt` cookie (HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth, Max-Age = the refresh token's remaining lifetime) instead of returning it; refresh/logout then read it from the cookie (no session anywhere: 401), and logout or a dead session clears it | public |
 | `POST /api/v1/auth/password/forgot` `{email}` → always 202 · `POST /api/v1/auth/password/reset` `{token, newPassword}` | public |
 | `POST /api/v1/auth/password/change` · `GET /api/v1/auth/me` | any user |
 | `POST /api/v1/auth/mfa/setup` `{password, enrolmentToken?}` · `/mfa/enable` `{code, enrolmentToken?}` · `/mfa/disable` | any user (staff need the enrolment token; staff can't disable) |
 | `POST /api/v1/auth/mfa/step-up` `{code}` → fresh access token valid for high-risk actions | MFA session |
 | `POST /api/v1/auth/staff/activate` `{token, password}` | new staff (from the activation email) |
+| `GET /api/v1/auth/admin/users?role&q&limit&offset` → user directory, newest first (`q`: email contains, or exact id; audited) | BANK_ADMIN, SUPPORT |
 | `POST /api/v1/auth/admin/users` `{email, role}` → 202 request | BANK_ADMIN |
 | `PATCH /api/v1/auth/admin/users/:id/status` | BANK_ADMIN (customers: immediate, re-enable by a different admin; staff: 202 request) |
 | `POST /api/v1/auth/admin/users/:id/mfa/reset` | BANK_ADMIN (always a 202 four-eyes request) |
-| `GET /api/v1/auth/admin/requests` · `POST .../:id/approve` · `POST .../:id/reject` | BANK_ADMIN (never the requester or the target) |
+| `GET /api/v1/auth/admin/requests` · `POST .../:id/approve` · `POST .../:id/reject` | BANK_ADMIN (approve: never the requester or the target; reject: never the target, the requester may withdraw) |
 | `GET/POST/PATCH /api/v1/customers/me` (name: letters, marks, spaces, `.'-`; date of birth: age 18–120) | owner |
 | `GET /api/v1/customers/:userId` (logged) · `PATCH /api/v1/customers/:userId/kyc` `{kycStatus, expectedVersion}` | staff · KYC_OFFICER |
 | `GET /api/v1/customers?kycStatus&q&limit&offset` (logged per profile; `PENDING` = review queue, oldest first) · `GET .../:userId/kyc/history` (logged) | KYC_OFFICER, BANK_ADMIN, SUPPORT |
@@ -211,7 +214,9 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 
 Errors are JSON: `{ "error": { "code", "message", "correlationId" } }`. `503 SERVICE_BUSY` /
 `SERVICE_UNAVAILABLE` (with `Retry-After`) means nothing was committed and the request is safe to retry with
-the same Idempotency-Key.
+the same Idempotency-Key. On authenticated endpoints `401` only ever means the access token is missing, invalid,
+expired or revoked: a wrong password or code in the body (password change, MFA setup/disable, step-up) is
+`403 INVALID_PASSWORD` or `400 INVALID_MFA_CODE`, so clients don't mistake a typo for an expired session.
 
 Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAGGER=true` to force it on).
 
@@ -219,6 +224,9 @@ Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAG
 
 - **Identity only from verified JWTs**: ES256 with `kid` (algorithm pinned, issuer/audience/expiry checked);
   client headers like `x-user-id` are ignored and stripped by the gateway.
+- **Staff network**: with `STAFF_ALLOWED_CIDRS` set, staff tokens only work from those networks on every route
+  of every service (decided by role, since staff actions share paths with customer routes) and staff can only sign
+  in from them; the gateway's path allowlist is a second layer.
 - **Revocable sessions**: access tokens carry a `jti`, a session id and the user's token version. Logout
   denylists the token and its session; refresh-token reuse (theft) kills the whole session, including access
   tokens already issued; password change/reset, MFA changes and disabling bump the version. Redis mirrors the

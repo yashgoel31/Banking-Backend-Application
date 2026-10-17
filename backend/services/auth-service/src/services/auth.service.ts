@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import net from 'net';
 import { EnrolmentPurpose, Prisma, PrismaClient, Role, User } from '../../generated/client';
 import {
   AuthenticatedUser,
@@ -10,8 +11,11 @@ import {
   RateLimitExceededError,
   TokenStateStore,
   UnauthorizedError,
+  isAddressAllowed,
   isStaffRole,
   logger,
+  staffNetworkError,
+  staffNetworksFromEnv,
 } from '@banksphere/common';
 import { PasswordService } from './password.service';
 import { TokenService, GeneratedTokens } from './token.service';
@@ -41,6 +45,8 @@ export interface LoginDTO {
 export interface LoginContext {
   /** Normalised client network (IPv4 address or IPv6 /64) used for lockout keying */
   network: string;
+  /** Client address, checked against the staff network allowlist (unknown = outside it) */
+  ip?: string;
 }
 
 export interface PublicUser {
@@ -52,6 +58,17 @@ export interface PublicUser {
 export interface AuthResponse {
   user: PublicUser;
   tokens: GeneratedTokens;
+}
+
+/** A row of the staff user directory (GET /admin/users) */
+export interface DirectoryUser {
+  id: string;
+  email: string;
+  role: Role;
+  isActive: boolean;
+  isEmailVerified: boolean;
+  mfaEnabled: boolean;
+  createdAt: Date;
 }
 
 export interface MfaChallengeResponse {
@@ -69,6 +86,8 @@ export interface AuthServiceConfig {
   enrolmentTtlHours: number;
   /** When set, staff accounts must use this email domain (e.g. "bank.example") */
   staffEmailDomain: string;
+  /** STAFF_ALLOWED_CIDRS: staff may only sign in from these networks (null/absent = anywhere) */
+  staffNetworks?: net.BlockList | null;
 }
 
 export const defaultAuthServiceConfig = (): AuthServiceConfig => ({
@@ -79,6 +98,7 @@ export const defaultAuthServiceConfig = (): AuthServiceConfig => ({
   mfaChallengeTtlSeconds: 300,
   enrolmentTtlHours: Number(process.env.STAFF_ENROLMENT_TTL_HOURS || 24),
   staffEmailDomain: (process.env.STAFF_EMAIL_DOMAIN || '').toLowerCase(),
+  staffNetworks: staffNetworksFromEnv(),
 });
 
 export interface AuthServiceDeps {
@@ -100,6 +120,8 @@ const REUSE_MESSAGE =
   'Security Alert: Compromised refresh token detected. All active sessions have been terminated. Please log in again.';
 /** A rotated refresh token presented again within this window is a concurrent refresh, not theft */
 const ROTATION_GRACE_MS = 10_000;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const normaliseEmail = (email: string) => email.trim().toLowerCase();
 const newOneTimeToken = () => crypto.randomBytes(32).toString('base64url');
@@ -139,6 +161,20 @@ export class AuthService {
   public async register(dto: RegisterDTO): Promise<{ message: string }> {
     const email = normaliseEmail(dto.email);
     const passwordHash = await PasswordService.hash(dto.password);
+    const accepted = { message: `Registration received. ${ACCEPTED_MESSAGE} Please verify your email before signing in.` };
+
+    if (this.isStaffEmail(email)) {
+      // Staff accounts only come from a four-eyes request. Self-registering a staff address would squat a
+      // future staff email (and block its CREATE_STAFF), so it is answered like an existing account
+      logger.warn({ alert: 'STAFF_DOMAIN_SELF_REGISTRATION' }, 'Self-registration attempted with a staff-domain address');
+      this.runInBackground('send existing-account email', async () => {
+        const existing = await this.prisma.user.findUnique({ where: { email } });
+        if (existing && (await this.security.consumeEmailQuota('existing-account', email))) {
+          await this.mailer.send(existingAccountEmail(email, this.config.appBaseUrl));
+        }
+      });
+      return accepted;
+    }
 
     let created: User | null = null;
     try {
@@ -165,7 +201,7 @@ export class AuthService {
       });
     }
 
-    return { message: `Registration received. ${ACCEPTED_MESSAGE} Please verify your email before signing in.` };
+    return accepted;
   }
 
   public async verifyEmail(rawToken: string): Promise<void> {
@@ -227,9 +263,15 @@ export class AuthService {
 
   public assertStaffEmailAllowed(email: string): void {
     const domain = this.config.staffEmailDomain;
-    if (domain && !normaliseEmail(email).endsWith(`@${domain}`)) {
+    if (domain && !this.isStaffEmail(email)) {
       throw new HttpError(400, 'STAFF_EMAIL_DOMAIN', `Staff accounts must use an @${domain} address`);
     }
+  }
+
+  /** True for addresses in STAFF_EMAIL_DOMAIN (false when no staff domain is configured) */
+  private isStaffEmail(email: string): boolean {
+    const domain = this.config.staffEmailDomain;
+    return Boolean(domain) && normaliseEmail(email).endsWith(`@${domain}`);
   }
 
   /**
@@ -350,21 +392,7 @@ export class AuthService {
 
   public async login(dto: LoginDTO, ctx: LoginContext): Promise<AuthResponse | MfaChallengeResponse> {
     const email = normaliseEmail(dto.email);
-
-    // Counted before the password check, so parallel bursts can't exceed the limit
-    const attempt = await this.security.beginLoginAttempt(email, ctx.network);
-    if (attempt.locked) {
-      if (attempt.stepUpRequired) {
-        logger.warn({ alert: 'LOGIN_GLOBAL_LOCKOUT' }, 'Distributed login failures on one account; unknown networks blocked');
-        throw new HttpError(
-          429,
-          'LOGIN_STEP_UP_REQUIRED',
-          'Too many failed sign-in attempts on this account. Reset your password by email to continue.'
-        );
-      }
-      // Same answer for existing and non-existing emails; counters exist for any address tried
-      throw new RateLimitExceededError('Too many failed sign-in attempts. Try again later or reset your password.');
-    }
+    await this.beginPasswordAttempt(email, ctx.network);
 
     const user = await this.prisma.user.findUnique({ where: { email } });
 
@@ -375,6 +403,10 @@ export class AuthService {
     if (!user || !user.isActive || !isPasswordValid) {
       throw new UnauthorizedError(INVALID_CREDENTIALS);
     }
+
+    // Only revealed after a correct password, so it doesn't leak whether an email is a staff account.
+    // Not a successful sign-in: the attempt isn't refunded and the network isn't remembered.
+    this.assertStaffNetwork(user, ctx);
 
     await this.security.loginSucceeded(email, ctx.network);
 
@@ -398,41 +430,53 @@ export class AuthService {
    * verification; codes are single-use; and a per-user failure budget (independent of the password) pauses
    * TOTP sign-in after repeated failures and alerts the user.
    */
-  public async completeMfaLogin(challengeToken: string, code: string): Promise<AuthResponse> {
+  public async completeMfaLogin(challengeToken: string, code: string, ctx: LoginContext): Promise<AuthResponse> {
     const invalid = () => new UnauthorizedError('Invalid or expired verification code');
     const challenge = await this.security.consumeMfaChallengeAttempt(challengeToken);
     if (!challenge) throw invalid();
     const { userId } = challenge;
-
-    if (await this.security.isMfaLocked(userId)) {
-      await this.security.deleteMfaChallenge(challengeToken);
-      throw new HttpError(429, 'MFA_TEMPORARILY_LOCKED', 'Too many failed verification codes. Try again later.');
-    }
 
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || !user.isActive || !user.mfaEnabled || !user.mfaSecretEnc) {
       await this.security.deleteMfaChallenge(challengeToken);
       throw invalid();
     }
+    // The challenge proves the password; checked before the code so TOTP can't be tried off-network
+    this.assertStaffNetwork(user, ctx);
 
-    const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
-    if (step === null || !(await this.consumeTotpStep(user.id, step))) {
-      const failures = await this.security.recordMfaFailure(user.id);
-      if (await this.security.isMfaLocked(user.id)) {
-        await this.security.deleteMfaChallenge(challengeToken);
-        if (failures === Number(process.env.MFA_MAX_FAILURES_PER_HOUR || 10)) {
-          logger.warn({ userId: user.id, alert: 'MFA_BRUTE_FORCE' }, 'TOTP sign-in paused after repeated failures');
-          this.runInBackground('send MFA locked email', () => this.mailer.send(mfaLockedEmail(user.email)).then(() => {}));
-        }
-      }
-      throw invalid();
-    }
+    const discardChallenge = () => this.security.deleteMfaChallenge(challengeToken);
+    if (!(await this.checkTotp(user, user.mfaSecretEnc, code, discardChallenge))) throw invalid();
 
-    await this.security.deleteMfaChallenge(challengeToken);
-    await this.security.clearMfaFailures(user.id);
+    await discardChallenge();
     // Bound to the token version at password time: a reset since then kills this half-finished login
     const tokens = await this.startSession(user, true, challenge.tokenVersion, true);
     return { user: { id: user.id, email: user.email, role: user.role }, tokens };
+  }
+
+  /**
+   * Checks a TOTP code within the user's failure budget, shared by sign-in, step-up and MFA disable. One
+   * attempt is reserved BEFORE the code is verified, so concurrent guesses can't all pass a "not locked yet"
+   * check; a correct code clears the budget, a wrong or replayed one keeps its reservation as a failure.
+   * Returns false for a wrong code; throws 429 MFA_TEMPORARILY_LOCKED once the budget is spent.
+   * `onLocked` runs when the budget is (or has just become) exhausted, e.g. to discard a login challenge.
+   */
+  private async checkTotp(user: User, secretEnc: string, code: string, onLocked?: () => Promise<void>): Promise<boolean> {
+    const reservation = await this.security.reserveMfaAttempt(user.id);
+    if (!reservation.allowed) {
+      await onLocked?.();
+      throw new HttpError(429, 'MFA_TEMPORARILY_LOCKED', 'Too many failed verification codes. Try again later.');
+    }
+    const step = verifyTotp(decryptSecret(secretEnc, user.id), code);
+    if (step !== null && (await this.consumeTotpStep(user.id, step))) {
+      await this.security.clearMfaFailures(user.id);
+      return true;
+    }
+    if (reservation.last) {
+      await onLocked?.();
+      logger.warn({ userId: user.id, alert: 'MFA_BRUTE_FORCE' }, 'TOTP paused after repeated failures');
+      this.runInBackground('send MFA locked email', () => this.mailer.send(mfaLockedEmail(user.email)).then(() => {}));
+    }
+    return false;
   }
 
   /** Atomically records the last used TOTP step; false if this (or a later) step was already used */
@@ -522,21 +566,46 @@ export class AuthService {
   // MFA enrolment (re-authentication required; staff also need a one-time enrolment token)
   // ---------------------------------------------------------------------------
 
-  private async reauthenticate(user: User, password: string): Promise<void> {
+  /**
+   * Password re-check inside an authenticated session. Counted like a sign-in attempt (same per-account and
+   * per-network lockout, counted before the check), so a stolen session can't be used to guess the password.
+   * A wrong password is 403 INVALID_PASSWORD, never 401: clients treat a 401 on an authenticated request as
+   * an expired session and would sign the user out over a typo.
+   */
+  private async reauthenticate(user: User, password: string, ctx: LoginContext, message = 'Password is incorrect'): Promise<void> {
+    await this.beginPasswordAttempt(user.email, ctx.network);
     if (!(await PasswordService.verify(user.passwordHash, password))) {
-      throw new UnauthorizedError('Password is incorrect');
+      throw new HttpError(403, 'INVALID_PASSWORD', message);
     }
+    await this.security.loginSucceeded(user.email, ctx.network);
+  }
+
+  /** Counts a password attempt BEFORE it is checked (atomic, so bursts can't exceed the limit); throws while locked */
+  private async beginPasswordAttempt(email: string, network: string): Promise<void> {
+    const attempt = await this.security.beginLoginAttempt(email, network);
+    if (!attempt.locked) return;
+    if (attempt.stepUpRequired) {
+      logger.warn({ alert: 'LOGIN_GLOBAL_LOCKOUT' }, 'Distributed login failures on one account; unknown networks blocked');
+      throw new HttpError(
+        429,
+        'LOGIN_STEP_UP_REQUIRED',
+        'Too many failed sign-in attempts on this account. Reset your password by email to continue.'
+      );
+    }
+    // Same answer for existing and non-existing emails; counters exist for any address tried
+    throw new RateLimitExceededError('Too many failed sign-in attempts. Try again later or reset your password.');
   }
 
   /** Starts (or restarts) enrolment: returns a new secret to load into an authenticator app */
   public async beginMfaSetup(
     actor: AuthenticatedUser,
     password: string,
-    enrolmentToken?: string
+    enrolmentToken: string | undefined,
+    ctx: LoginContext
   ): Promise<{ secret: string; otpauthUri: string }> {
     const user = await this.requireActiveUser(actor.id);
     if (user.mfaEnabled) throw new ConflictError('MFA is already enabled for this account');
-    await this.reauthenticate(user, password);
+    await this.reauthenticate(user, password, ctx);
     if (isStaffRole(user.role)) await this.assertEnrolmentTokenValid(enrolmentToken, user.id);
 
     const secret = generateTotpSecret();
@@ -556,20 +625,21 @@ export class AuthService {
     const user = await this.requireActiveUser(actor.id);
     if (user.mfaEnabled) throw new ConflictError('MFA is already enabled for this account');
     if (!user.mfaPendingSecretEnc) throw new HttpError(400, 'MFA_SETUP_REQUIRED', 'Start MFA setup first');
-    if (!actor.sessionId) throw new UnauthorizedError();
+    const sessionId = actor.sessionId;
+    if (!sessionId) throw new UnauthorizedError();
 
     const secret = decryptSecret(user.mfaPendingSecretEnc, user.id);
     const step = verifyTotp(secret, code);
     if (step === null) throw new HttpError(400, 'INVALID_MFA_CODE', 'The verification code is not valid');
 
-    const { updated, familyExpiresAt } = await this.prisma.$transaction(async (tx) => {
+    const { updated, tokens } = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${user.id} FOR UPDATE`;
       if (isStaffRole(user.role)) {
         if (!enrolmentToken) throw new HttpError(403, 'ENROLMENT_TOKEN_REQUIRED', 'Staff MFA enrolment requires a valid one-time enrolment token');
         await this.consumeEnrolmentToken(tx, enrolmentToken, EnrolmentPurpose.MFA_ENROL, user.id);
       }
       const current = await tx.refreshToken.findFirst({
-        where: { userId: user.id, familyId: actor.sessionId, isRevoked: false },
+        where: { userId: user.id, familyId: sessionId, isRevoked: false },
       });
       if (!current) throw new UnauthorizedError('Your session is no longer valid');
       const result = await tx.user.update({
@@ -584,24 +654,26 @@ export class AuthService {
         },
       });
       // Every session, including the current refresh token, is revoked; the current session continues
-      // only through the new tokens issued below in the same family
+      // only through the new tokens issued here in the same family. Issued inside the transaction (under
+      // the user row lock) so a password reset landing right after commit revokes them as well.
       await tx.refreshToken.updateMany({ where: { userId: user.id, isRevoked: false }, data: { isRevoked: true } });
       await this.audit(tx, user.id, 'MFA_ENABLED', user.id);
-      return { updated: result, familyExpiresAt: current.familyExpiresAt };
+      // The code just verified is a fresh TOTP check; the factor-age rule still keeps a brand-new factor
+      // from authorising high-risk actions in production
+      const issued = await this.createTokensInFamily(
+        tx,
+        result,
+        { familyId: sessionId, familyExpiresAt: current.familyExpiresAt, mfaAuthenticated: true },
+        true
+      );
+      return { updated: result, tokens: issued };
     });
 
     await this.publishTokenVersion(updated.id, updated.tokenVersion);
     this.runInBackground('send MFA changed email', () =>
       this.mailer.send(mfaChangedEmail(updated.email, true)).then(() => {})
     );
-    // The code just verified is a fresh TOTP check; the factor-age rule still keeps a brand-new factor
-    // from authorising high-risk actions in production
-    return this.createTokensInFamily(
-      this.prisma,
-      updated,
-      { familyId: actor.sessionId, familyExpiresAt, mfaAuthenticated: true },
-      true
-    );
+    return tokens;
   }
 
   /**
@@ -613,15 +685,9 @@ export class AuthService {
     if (!actor.mfa || !actor.sessionId || !user.mfaEnabled || !user.mfaSecretEnc) {
       throw new HttpError(403, 'MFA_REQUIRED', 'Sign in with two-factor authentication first');
     }
-    if (await this.security.isMfaLocked(user.id)) {
-      throw new HttpError(429, 'MFA_TEMPORARILY_LOCKED', 'Too many failed verification codes. Try again later.');
-    }
-    const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
-    if (step === null || !(await this.consumeTotpStep(user.id, step))) {
-      await this.security.recordMfaFailure(user.id);
+    if (!(await this.checkTotp(user, user.mfaSecretEnc, code))) {
       throw new HttpError(400, 'INVALID_MFA_CODE', 'The verification code is not valid');
     }
-    await this.security.clearMfaFailures(user.id);
     const session = await this.prisma.refreshToken.findFirst({ where: { userId: user.id, familyId: actor.sessionId, isRevoked: false } });
     if (!session) throw new UnauthorizedError('Your session is no longer valid');
     await this.audit(this.prisma, user.id, 'MFA_STEP_UP', user.id);
@@ -632,15 +698,15 @@ export class AuthService {
    * Customers may turn MFA off with their password and a current code. Staff cannot: MFA is
    * mandatory for them and only a four-eyes administrative reset can clear it.
    */
-  public async disableMfa(actor: AuthenticatedUser, password: string, code: string): Promise<void> {
+  public async disableMfa(actor: AuthenticatedUser, password: string, code: string, ctx: LoginContext): Promise<void> {
     const user = await this.requireActiveUser(actor.id);
     if (isStaffRole(user.role)) {
       throw new ForbiddenError('MFA is mandatory for staff accounts');
     }
     if (!user.mfaEnabled || !user.mfaSecretEnc) throw new ConflictError('MFA is not enabled');
-    await this.reauthenticate(user, password);
-    const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
-    if (step === null || !(await this.consumeTotpStep(user.id, step))) {
+    await this.reauthenticate(user, password, ctx);
+    // Same TOTP failure budget as sign-in and step-up
+    if (!(await this.checkTotp(user, user.mfaSecretEnc, code))) {
       throw new HttpError(400, 'INVALID_MFA_CODE', 'The verification code is not valid');
     }
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -778,15 +844,14 @@ export class AuthService {
   public async changePassword(
     actor: AuthenticatedUser,
     currentPassword: string,
-    newPassword: string
+    newPassword: string,
+    ctx: LoginContext
   ): Promise<GeneratedTokens> {
     const existing = await this.prisma.user.findUnique({ where: { id: actor.id } });
     if (!existing || !existing.isActive) {
       throw new UnauthorizedError();
     }
-    if (!(await PasswordService.verify(existing.passwordHash, currentPassword))) {
-      throw new UnauthorizedError('Current password is incorrect');
-    }
+    await this.reauthenticate(existing, currentPassword, ctx, 'Current password is incorrect');
     if (await PasswordService.verify(existing.passwordHash, newPassword)) {
       throw new HttpError(400, 'PASSWORD_REUSED', 'The new password must be different from the current one');
     }
@@ -854,6 +919,48 @@ export class AuthService {
   }
 
   /**
+   * Staff user directory (BANK_ADMIN, SUPPORT): newest first, optionally by role and by `q` (email contains,
+   * case-insensitive, or the exact id when `q` is a UUID). Only directory fields are ever read or returned,
+   * never hashes or MFA secrets; every listing is audited with the ids it revealed.
+   */
+  public async listUsers(
+    actor: AuthenticatedUser,
+    filter: { role?: Role; q?: string; limit: number; offset: number }
+  ): Promise<DirectoryUser[]> {
+    const where: Prisma.UserWhereInput = filter.role ? { role: filter.role } : {};
+    const q = filter.q?.trim();
+    if (q) {
+      const match: Prisma.UserWhereInput[] = [{ email: { contains: q, mode: 'insensitive' } }];
+      if (UUID.test(q)) match.push({ id: q.toLowerCase() });
+      where.OR = match;
+    }
+    const users = await this.prisma.user.findMany({
+      where,
+      select: { id: true, email: true, role: true, isActive: true, isEmailVerified: true, mfaEnabled: true, createdAt: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // id: a stable order across pages
+      take: filter.limit,
+      skip: filter.offset,
+    });
+    await this.audit(this.prisma, actor.id, 'ADMIN_USERS_LISTED', null, {
+      role: filter.role ?? null,
+      q: q || null,
+      limit: filter.limit,
+      offset: filter.offset,
+      userIds: users.map((u) => u.id),
+    });
+    // Built field by field, so nothing beyond the directory fields can reach the response
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      isActive: u.isActive,
+      isEmailVerified: u.isEmailVerified,
+      mfaEnabled: u.mfaEnabled,
+      createdAt: u.createdAt,
+    }));
+  }
+
+  /**
    * Enables/disables a user inside the caller's transaction. Disabling revokes every refresh token and
    * bumps the token version, so the user is locked out immediately.
    */
@@ -902,8 +1009,8 @@ export class AuthService {
   }
 
   /**
-   * Mirrors token versions into Redis. At startup every non-zero version is synced; periodically, only
-   * recently changed users, so a Redis write that failed during a reset is repaired within seconds.
+   * Mirrors token versions into Redis: every non-zero version (full pass), or only users changed since a
+   * given time. Writes are pipelined per batch when the store supports it.
    */
   public async syncTokenVersions(changedSince?: Date): Promise<number> {
     let synced = 0;
@@ -916,8 +1023,10 @@ export class AuthService {
         take: 500,
         ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       });
-      for (const u of batch) {
-        await this.tokenState.setTokenVersion(u.id, u.tokenVersion);
+      if (this.tokenState.setTokenVersions) {
+        await this.tokenState.setTokenVersions(batch.map((u) => ({ userId: u.id, tokenVersion: u.tokenVersion })));
+      } else {
+        for (const u of batch) await this.tokenState.setTokenVersion(u.id, u.tokenVersion);
       }
       synced += batch.length;
       if (batch.length < 500) return synced;
@@ -928,6 +1037,36 @@ export class AuthService {
   /** Lookback for the periodic sync: at least twice the access-token lifetime */
   public syncLookbackMs(): number {
     return Math.max(10 * 60_000, 2 * this.tokenService.accessTokenTtlSeconds * 1000);
+  }
+
+  /**
+   * Keeps Redis in step with the DB without delaying startup: a full pass runs in the background (retried
+   * every interval until it succeeds), then each pass syncs the users changed since shortly before the
+   * previous successful one, which repairs any write that failed (e.g. a Redis blip during a reset). Passes
+   * never overlap. Serving before the first pass is safe: Redis is persistent and normally already current,
+   * and the other services check it whether or not auth-service is up. Returns a function that stops it.
+   */
+  public startTokenVersionSync(intervalMs = 30_000): () => void {
+    let lastSuccessStart: number | null = null;
+    let running = false;
+    const pass = async () => {
+      if (running) return;
+      running = true;
+      const startedAt = Date.now();
+      const full = lastSuccessStart === null;
+      try {
+        const synced = await this.syncTokenVersions(full ? undefined : new Date(lastSuccessStart! - this.syncLookbackMs()));
+        if (full) logger.info({ synced }, 'Token versions mirrored to Redis');
+        lastSuccessStart = startedAt;
+      } catch (err) {
+        logger.warn({ err, full }, 'Token version sync failed; retrying on the next interval');
+      } finally {
+        running = false;
+      }
+    };
+    void pass();
+    const timer = setInterval(() => void pass(), intervalMs);
+    return () => clearInterval(timer);
   }
 
   /**
@@ -953,6 +1092,14 @@ export class AuthService {
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
+
+  /** Staff sign in only from STAFF_ALLOWED_CIDRS (every service refuses staff tokens from elsewhere too) */
+  private assertStaffNetwork(user: User, ctx: LoginContext): void {
+    const networks = this.config.staffNetworks;
+    if (!networks || !isStaffRole(user.role) || isAddressAllowed(networks, ctx.ip)) return;
+    logger.warn({ userId: user.id, role: user.role, alert: 'STAFF_LOGIN_OFF_NETWORK' }, 'Staff sign-in from a non-allowed network');
+    throw staffNetworkError('Staff sign-in is only available from the staff network');
+  }
 
   private async requireActiveUser(userId: string): Promise<User> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -1107,6 +1254,7 @@ export class AuthService {
       accessToken,
       refreshToken: rawRefreshToken,
       expiresInSeconds: this.tokenService.accessTokenTtlSeconds,
+      refreshExpiresAt: expiresAt,
     };
   }
 }

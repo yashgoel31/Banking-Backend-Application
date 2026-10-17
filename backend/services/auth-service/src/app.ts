@@ -96,7 +96,7 @@ export function createApp(prisma: PrismaClient, deps: AuthAppDeps) {
         '/api/v1/auth/mfa/enable': { post: { summary: 'Confirm TOTP enrolment with a code; returns an MFA session' } },
         '/api/v1/auth/mfa/disable': { post: { summary: 'Customers only: disable TOTP with password + code' } },
         '/api/v1/auth/admin/users/{userId}/mfa/reset': { post: { summary: 'BANK_ADMIN: reset another user\'s MFA' } },
-        '/api/v1/auth/refresh': { post: { summary: 'Rotate refresh token' } },
+        '/api/v1/auth/refresh': { post: { summary: 'Rotate refresh token (body, or the bs_rt cookie with X-Session-Transport: cookie)' } },
         '/api/v1/auth/logout': { post: { summary: 'Revoke refresh-token family and the presented access token' } },
         '/api/v1/auth/password/forgot': { post: { summary: 'Email a single-use reset link (always 202)' } },
         '/api/v1/auth/password/reset': { post: { summary: 'Set a new password with a reset token; signs out everywhere' } },
@@ -143,15 +143,6 @@ async function main(): Promise<void> {
     rateLimitRedis,
   });
 
-  const synced = await authService.syncTokenVersions();
-  logger.info({ synced }, 'Token versions mirrored to Redis');
-  // Repairs any token-version write that failed (e.g. Redis blip during a password reset) within 30s
-  const versionSync = setInterval(() => {
-    authService
-      .syncTokenVersions(new Date(Date.now() - authService.syncLookbackMs()))
-      .catch((err) => logger.warn({ err }, 'Periodic token version sync failed'));
-  }, 30_000);
-
   const { publisher, kafka } = createEventPublisher(process.env.KAFKA_CLIENT_ID || 'auth-service');
   const relay = publisher ? new OutboxRelay(prisma, publisher) : null;
   relay?.start(Number(process.env.OUTBOX_POLL_INTERVAL_MS || 2000));
@@ -162,7 +153,7 @@ async function main(): Promise<void> {
 
   startHttpServer(app, process.env.PORT || 8001, 'auth-service', [
     () => clearInterval(housekeeping),
-    () => clearInterval(versionSync),
+    () => stopVersionSync(),
     () => relay?.stop(),
     () => authService.drainBackgroundTasks(),
     () => kafka?.disconnect(),
@@ -170,6 +161,9 @@ async function main(): Promise<void> {
     () => redis.quit(),
     () => rateLimitRedis.quit(),
   ]);
+  // Started after listening: the full token-version pass runs in the background (a big users table no longer
+  // delays startup), then every 30s the recently changed users are re-synced
+  const stopVersionSync = authService.startTokenVersionSync(30_000);
 }
 
 if (require.main === module) {
