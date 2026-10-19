@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+services/*/generated/
+*.log
+scripts/.e2e-state.json
+.claude/
