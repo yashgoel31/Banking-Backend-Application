@@ -1,5 +1,5 @@
 import { CustomerService } from '../src/services/customer.service';
-import { NotFoundError } from '@banksphere/common';
+import { NotFoundError, ForbiddenError, HttpError } from '@banksphere/common';
 
 describe('CustomerService (Redis Cache-Aside & Invalidation)', () => {
   let mockPrisma: any;
@@ -12,8 +12,14 @@ describe('CustomerService (Redis Cache-Aside & Invalidation)', () => {
         findUnique: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn(),
       },
+      kycEvent: { create: jest.fn(), findMany: jest.fn() },
+      staffAccessLog: { create: jest.fn() },
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
+    mockPrisma.$transaction = jest.fn((cb: any) => cb(mockPrisma));
 
     mockRedis = {
       get: jest.fn(),
@@ -103,6 +109,51 @@ describe('CustomerService (Redis Cache-Aside & Invalidation)', () => {
       expect(updated.fullName).toBe('New Name');
       // Verify cache invalidation occurred
       expect(mockRedis.del).toHaveBeenCalledWith('customer:profile:u-1');
+    });
+  });
+
+  describe('KYC integrity', () => {
+    it('KYC BYPASS: changing the name on a VERIFIED profile sends it back to PENDING and is recorded', async () => {
+      mockPrisma.customerProfile.findUnique.mockResolvedValue({ userId: 'u-1', fullName: 'Alice Smith', dateOfBirth: null, kycStatus: 'VERIFIED' });
+      mockPrisma.customerProfile.update.mockImplementation(({ data }: any) => ({ userId: 'u-1', kycStatus: data.kycStatus ?? 'VERIFIED', ...data }));
+
+      const updated = await customerService.updateProfile('u-1', { fullName: 'Mallory Mule' });
+
+      expect(mockPrisma.customerProfile.update.mock.calls[0][0].data.kycStatus).toBe('PENDING');
+      expect(updated.kycStatus).toBe('PENDING');
+      expect(mockPrisma.kycEvent.create.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({ action: 'IDENTITY_CHANGED_KYC_RESET', fromStatus: 'VERIFIED', toStatus: 'PENDING' })
+      );
+    });
+
+    it('changing only the phone number keeps KYC as is', async () => {
+      mockPrisma.customerProfile.findUnique.mockResolvedValue({ userId: 'u-1', fullName: 'Alice Smith', dateOfBirth: null, kycStatus: 'VERIFIED' });
+      mockPrisma.customerProfile.update.mockImplementation(({ data }: any) => ({ userId: 'u-1', kycStatus: 'VERIFIED', ...data }));
+      await customerService.updateProfile('u-1', { phoneNumber: '+919876500000' });
+      expect(mockPrisma.customerProfile.update.mock.calls[0][0].data.kycStatus).toBeUndefined();
+      expect(mockPrisma.kycEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('SELF-KYC: staff cannot decide their own KYC; decisions by others are audited', async () => {
+      const officer = { id: 'kyc-1', email: 'k@b.com', role: 'KYC_OFFICER' as const, mfa: true };
+      await expect(customerService.updateKycStatus(officer, 'kyc-1', 'VERIFIED' as any, 1)).rejects.toThrow(ForbiddenError);
+
+      mockPrisma.customerProfile.findUnique.mockResolvedValue({ userId: 'u-1', kycStatus: 'PENDING', version: 1 });
+      mockPrisma.customerProfile.findUniqueOrThrow.mockResolvedValue({ userId: 'u-1', kycStatus: 'VERIFIED', version: 2 });
+      await customerService.updateKycStatus(officer, 'u-1', 'VERIFIED' as any, 1);
+      expect(mockPrisma.customerProfile.updateMany.mock.calls[0][0].where).toEqual({ userId: 'u-1', version: 1 });
+      expect(mockPrisma.kycEvent.create.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({ actorId: 'kyc-1', toStatus: 'VERIFIED', details: { reviewedVersion: 1 } })
+      );
+      expect(mockRedis.del).toHaveBeenCalledWith('customer:profile:u-1');
+    });
+
+    it('STALE REVIEW: a decision on a profile that changed after it was reviewed is rejected', async () => {
+      const officer = { id: 'kyc-1', email: 'k@b.com', role: 'KYC_OFFICER' as const, mfa: true };
+      mockPrisma.customerProfile.findUnique.mockResolvedValue({ userId: 'u-1', kycStatus: 'PENDING', version: 3 });
+      mockPrisma.customerProfile.updateMany.mockResolvedValue({ count: 0 });
+      await expect(customerService.updateKycStatus(officer, 'u-1', 'VERIFIED' as any, 2)).rejects.toThrow(HttpError);
+      expect(mockPrisma.kycEvent.create).not.toHaveBeenCalled();
     });
   });
 });

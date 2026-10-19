@@ -1,10 +1,17 @@
-import { RiskLevel } from '../generated/client';
+import { RiskLevel } from '../../generated/client';
 
 export interface TransactionEvaluationContext {
   transactionId: string;
   accountId: string;
   amountInPaise: bigint;
   timestamp: Date;
+  /** OUTBOUND: money leaving the account; INBOUND: money arriving (mule-account detection) */
+  direction: 'OUTBOUND' | 'INBOUND';
+  /** DEPOSIT | WITHDRAWAL | TRANSFER */
+  transactionType?: string;
+  /** Customer who sent a transfer, or the teller who handled cash */
+  initiatedBy?: string;
+  cashOperationId?: string;
 }
 
 export interface RiskRuleResult {

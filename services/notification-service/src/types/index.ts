@@ -13,6 +13,8 @@ export interface TransactionCompletedEvent extends BaseEvent {
   amountInPaise: string;
   sourceAccountId?: string;
   destinationAccountId?: string;
+  sourceCustomerId?: string;
+  destinationCustomerId?: string;
 }
 
 export interface AccountCreatedEvent extends BaseEvent {
@@ -22,6 +24,29 @@ export interface AccountCreatedEvent extends BaseEvent {
   customerId: string;
   accountType: 'SAVINGS' | 'CURRENT';
   currency: string;
+}
+
+export interface AccountStatusChangedEvent extends BaseEvent {
+  eventType: 'account.status.changed.v1';
+  accountId: string;
+  customerId: string;
+  previousStatus: string;
+  status: string;
+}
+
+export interface WithdrawalCodeCreatedEvent extends BaseEvent {
+  eventType: 'withdrawal.code.created.v1';
+  customerId: string;
+  accountId: string;
+  amountInPaise: string;
+  expiresAt: string;
+}
+
+export interface UserRegisteredEvent extends BaseEvent {
+  eventType: 'user.registered.v1';
+  userId: string;
+  email: string;
+  role: string;
 }
 
 export interface FraudAlertCreatedEvent extends BaseEvent {
