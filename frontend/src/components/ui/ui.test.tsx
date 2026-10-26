@@ -102,9 +102,13 @@ describe('display primitives', () => {
     expect(screen.getByText('₹25.00')).toBeInTheDocument();
   });
 
-  it('derives avatar initials', () => {
+  it('derives avatar initials from the name part of an email, ignoring digits', () => {
     const { container } = render(<Avatar name="asha.rao@example.in" />);
     expect(container.textContent).toBe('AR');
+    const digits = render(<Avatar name="asha.686749@e2e.test" />);
+    expect(digits.container.textContent).toBe('A');
+    const none = render(<Avatar name="1234@x.in" />);
+    expect(none.container.textContent).toBe('?');
   });
 
   it('uses alert semantics for danger callouts', () => {

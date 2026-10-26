@@ -312,8 +312,9 @@ MoneyInput.displayName = 'MoneyInput';
 export function Avatar({ name, className }: { name: string; className?: string }) {
   const initials =
     name
-      .split(/[\s@._-]+/)
-      .filter(Boolean)
+      .split('@')[0]!
+      .split(/[\s._-]+/)
+      .filter((part) => /^\p{L}/u.test(part))
       .slice(0, 2)
       .map((p) => p.charAt(0).toUpperCase())
       .join('') || '?';

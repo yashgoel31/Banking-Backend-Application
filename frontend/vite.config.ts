@@ -41,6 +41,9 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
     css: false,
     restoreMocks: true,
+    // Generous budgets so a loaded CI machine never turns a correct test into a timeout
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],

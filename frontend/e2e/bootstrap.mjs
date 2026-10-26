@@ -33,7 +33,7 @@ for (const name of ['ops.lead', 'ops.second']) {
   const cwd = process.env.COMPOSE_CWD || repoRoot;
   const output = execFileSync(
     cmd,
-    [...base, 'run', '--rm', '-T', '-e', `ADMIN_EMAIL=${email}`, '-e', `ADMIN_PASSWORD=${password}`, 'auth-service', 'node', 'dist/scripts/create-admin.js'],
+    [...base, 'run', '--rm', '-T', '--no-deps', '-e', `ADMIN_EMAIL=${email}`, '-e', `ADMIN_PASSWORD=${password}`, 'auth-service', 'node', 'dist/scripts/create-admin.js'],
     { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }
   );
   const token = /ENROLMENT_TOKEN=([A-Za-z0-9_-]+)/.exec(output)?.[1];

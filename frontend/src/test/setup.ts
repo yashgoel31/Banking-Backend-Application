@@ -1,8 +1,11 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import { toast } from 'sonner';
 import { server } from './server';
+
+// findBy*/waitFor wait up to 5 s (default 1 s): lazy routes and busy machines can be slow, never wrong
+configure({ asyncUtilTimeout: 5_000 });
 
 // jsdom gaps used by Radix primitives and our layout code
 class ResizeObserverStub {

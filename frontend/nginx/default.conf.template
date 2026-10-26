@@ -48,6 +48,24 @@ server {
         return 200 "ok\n";
     }
 
+    # API readiness/liveness (the gateway answers only UP/DEGRADED, cached), for load balancers and monitoring
+    location ~ ^/health(/live)?$ {
+        proxy_pass http://banksphere_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/snippets/security-headers.conf;
+    }
+
+    # Service-to-service APIs are never reachable from outside, whatever the method
+    location ^~ /internal/ {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 404 '{"error":{"code":"NOT_FOUND","message":"Not found"}}';
+    }
+
     location /api/ {
         proxy_pass http://banksphere_api;
         proxy_http_version 1.1;
