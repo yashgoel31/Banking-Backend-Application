@@ -118,7 +118,8 @@ export class CustomerController {
   public getKycHistory = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { userId } = userIdParamsSchema.parse(req.params);
-      res.status(200).json({ success: true, data: await this.customerService.getKycHistory(userId) });
+      const events = await this.customerService.getKycHistory(getAuthenticatedUser(req), userId);
+      res.status(200).json({ success: true, data: events });
     } catch (error) {
       next(error);
     }

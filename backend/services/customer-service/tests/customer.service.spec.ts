@@ -156,4 +156,23 @@ describe('CustomerService (Redis Cache-Aside & Invalidation)', () => {
       expect(mockPrisma.kycEvent.create).not.toHaveBeenCalled();
     });
   });
+
+  describe('staff access log', () => {
+    const support = { id: 'sup-1', email: 's@b.com', role: 'SUPPORT' as const, mfa: true };
+
+    it('KYC history (it holds identity data) is a recorded staff read', async () => {
+      mockPrisma.kycEvent.findMany.mockResolvedValue([{ id: 'ev-1', userId: 'u-1' }]);
+      const events = await customerService.getKycHistory(support, 'u-1');
+      expect(events).toEqual([{ id: 'ev-1', userId: 'u-1' }]);
+      expect(mockPrisma.staffAccessLog.create).toHaveBeenCalledWith({
+        data: { actorId: 'sup-1', actorRole: 'SUPPORT', userId: 'u-1', action: 'VIEW_KYC_HISTORY' },
+      });
+    });
+
+    it('NO READ WITHOUT A LOG: if the access log cannot be written, the history is not returned', async () => {
+      mockPrisma.kycEvent.findMany.mockResolvedValue([{ id: 'ev-1', userId: 'u-1' }]);
+      mockPrisma.staffAccessLog.create.mockRejectedValue(new Error('db down'));
+      await expect(customerService.getKycHistory(support, 'u-1')).rejects.toThrow('db down');
+    });
+  });
 });
