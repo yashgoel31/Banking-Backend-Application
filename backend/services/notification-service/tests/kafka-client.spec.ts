@@ -190,7 +190,8 @@ describe('KafkaService consumer pipeline', () => {
 
   it('HEARTBEAT: keeps heartbeating while a slow handler runs', async () => {
     const { main } = await subscribe(() => new Promise((resolve) => setTimeout(resolve, 10_000)));
-    jest.useFakeTimers();
+    // Only timers are faked: faking microtasks/setImmediate strands the consumer's promises and keeps Jest alive
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate', 'Date', 'hrtime', 'performance'] });
     try {
       const heartbeat = jest.fn().mockResolvedValue(undefined);
       const done = deliver(main, 'transaction.completed.v1', message({ eventId: 'e-8' }), heartbeat);

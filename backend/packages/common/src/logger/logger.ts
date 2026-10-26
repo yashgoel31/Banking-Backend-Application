@@ -1,6 +1,8 @@
 import pino from 'pino';
 
 const isProduction = process.env.NODE_ENV === 'production';
+// pino-pretty runs in a worker thread; under test (fake timers) it can keep Jest from exiting, so tests log plain JSON
+const prettyLogs = !isProduction && process.env.NODE_ENV !== 'test' && process.env.LOG_PRETTY !== 'false';
 
 export const logger = pino({
   level: process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug'),
@@ -25,7 +27,7 @@ export const logger = pino({
     ],
     censor: '[REDACTED_FINANCIAL_SECRET]',
   },
-  transport: isProduction
+  transport: !prettyLogs
     ? undefined
     : {
         target: 'pino-pretty',
