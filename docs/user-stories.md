@@ -16,7 +16,7 @@ Roles: **Customer**, **Teller**, **KYC officer**, **Fraud analyst**, **Support**
 - AC2 Whether or not the email is already registered, the response is identical ("Check your email").
 - AC3 A verification link is emailed; opening it verifies the address once; an expired or used link offers a new one.
 - AC4 Signing in before verifying explains what to do and can resend the link.
-- Tests: `AuthFlows.test.tsx` (Register, VerifyEmail), `LoginPage.test.tsx`, `journeys/01-customer-onboarding.spec.ts`, backend e2e "registration / enumeration".
+- Tests: `AuthFlows.test.tsx` (Register, VerifyEmail), `LoginPage.test.tsx`, `journeys/bank-day.spec.ts` ("a customer signs up…"), backend e2e "registration / enumeration".
 
 ### US-1.2 Sign in securely (everyone)
 - AC1 Wrong credentials produce one generic message (no account enumeration).
@@ -24,7 +24,7 @@ Roles: **Customer**, **Teller**, **KYC officer**, **Fraud analyst**, **Support**
 - AC3 Repeated failures lock sign-in; a distributed attack requires a password reset by email.
 - AC4 Staff signing in from outside the staff network are refused with a clear message.
 - AC5 Signed-in people visiting the sign-in page go to their home page; signed-out people visiting a protected page are sent to sign in and returned afterwards.
-- Tests: `LoginPage.test.tsx`, `routes.test.tsx`, `session.test.ts`, backend auth unit tests, backend e2e "brute force", journeys.
+- Tests: `LoginPage.test.tsx`, `routes.test.tsx`, `session.test.ts`, backend auth unit tests, backend e2e "brute force", `journeys/bank-day.spec.ts`.
 
 ### US-1.3 Stay signed in safely (everyone)
 - AC1 The access token lives only in memory; the refresh token is an `HttpOnly`, `SameSite=Strict` cookie the page can't read.
@@ -32,28 +32,28 @@ Roles: **Customer**, **Teller**, **KYC officer**, **Fraud analyst**, **Support**
 - AC3 Signing out in one tab signs out every tab; a password change or reset signs out every other device.
 - AC4 Being offline never signs anyone out; an ended session sends the person to sign in.
 - AC5 A mistyped password inside the app (e.g. when changing it) never ends the session.
-- Tests: `session.test.ts`, `client.test.ts`, `SecurityFlows.test.tsx`, backend auth cookie tests, `journeys/05-security.spec.ts`.
+- Tests: `session.test.ts`, `client.test.ts`, `SecurityFlows.test.tsx`, backend auth cookie tests, `journeys/bank-day.spec.ts` ("security: …").
 
 ### US-1.4 Reset a forgotten password (everyone)
 - AC1 Requesting a reset always shows the same confirmation.
 - AC2 The emailed link works once, sets a policy-compliant password and ends every session, including this device.
-- Tests: `AuthFlows.test.tsx` (Forgot/Reset), journeys.
+- Tests: `AuthFlows.test.tsx` (Forgot/Reset), `journeys/bank-day.spec.ts`.
 
 ### US-1.5 Protect my account with an authenticator (Customer)
 - AC1 Setup re-asks for the password, shows a locally generated QR code and the setup key, and confirms with a code.
 - AC2 Turning it off needs the password and a current code, and signs out everywhere.
-- Tests: `SecurityFlows.test.tsx`, `journeys/05-security.spec.ts`.
+- Tests: `SecurityFlows.test.tsx`, `journeys/bank-day.spec.ts` ("security: …").
 
 ### US-1.6 Approve high-value actions (Customer)
 *As a customer I want large transfers to need a fresh code so that a stolen session can't empty my account.*
 - AC1 Transfers ≥ ₹1,00,000, withdrawal codes ≥ ₹25,000 and instantly active payees ask for a fresh authenticator code, then continue automatically with the same request (no duplicate).
 - AC2 Without an authenticator, the person is told how to set one up; a brand-new authenticator explains its waiting period.
-- Tests: `StepUp.test.tsx`, `TransferPage.test.tsx`, `journeys/05-security.spec.ts`.
+- Tests: `StepUp.test.tsx`, `TransferPage.test.tsx`, `journeys/bank-day.spec.ts` ("security: …").
 
 ### US-1.7 Join as staff (all staff roles)
 - AC1 An administrator requests the account (email in the corporate domain + role) and a second administrator approves it.
 - AC2 The new colleague receives an activation link, chooses their own password (administrators never see it) and must enrol an authenticator before doing anything else.
-- Tests: `ApprovalsPage.test.tsx`, `AuthFlows.test.tsx` (StaffActivate), `SecurityFlows.test.tsx` (MfaEnrol), `journeys/02-staff-onboarding.spec.ts`, backend e2e "four-eyes".
+- Tests: `ApprovalsPage.test.tsx`, `AuthFlows.test.tsx` (StaffActivate), `SecurityFlows.test.tsx` (MfaEnrol), `journeys/bank-day.spec.ts` ("four-eyes staff onboarding…"), backend e2e "four-eyes".
 
 ---
 
@@ -63,16 +63,16 @@ Roles: **Customer**, **Teller**, **KYC officer**, **Fraud analyst**, **Support**
 - AC1 New customers are guided to create a profile (name, mobile, date of birth, address) with the same validation as the server.
 - AC2 The KYC status (pending, verified, rejected) and what it means is always visible.
 - AC3 Changing identity details warns that it restarts verification.
-- Tests: `ProfilePage.test.tsx`, `DashboardPage.test.tsx`, journeys.
+- Tests: `ProfilePage.test.tsx`, `DashboardPage.test.tsx`, `journeys/bank-day.spec.ts`.
 
 ### US-2.2 See my money at a glance (Customer)
 - AC1 The dashboard shows total balance, each account, a 30-day cash-flow chart and recent activity, with clear loading, empty and error states.
 - AC2 Amounts are exact (integer paise, Indian digit grouping).
-- Tests: `DashboardPage.test.tsx`, `money.test.ts`, journeys.
+- Tests: `DashboardPage.test.tsx`, `money.test.ts`, `journeys/bank-day.spec.ts`.
 
 ### US-2.3 Open an account (Customer)
 - AC1 Only customers with verified KYC can open a savings or current account; others are told why.
-- Tests: `AccountsPage.test.tsx`, journeys, backend account tests.
+- Tests: `AccountsPage.test.tsx`, `journeys/bank-day.spec.ts`, backend account tests.
 
 ### US-2.4 Read my statement and control my account (Customer)
 - AC1 Each account shows its balance, daily limit and a paginated statement (credits and debits, running balance).
@@ -83,18 +83,18 @@ Roles: **Customer**, **Teller**, **KYC officer**, **Fraud analyst**, **Support**
 - AC1 I can transfer between my accounts or to a registered payee, review before confirming, and get a receipt with a reference.
 - AC2 A transfer is never sent twice (idempotency key per transfer, reused on retry).
 - AC3 Every refusal (insufficient balance, daily limit, payee cooling-off, first-day cap, frozen account) is explained.
-- Tests: `TransferPage.test.tsx`, `endpoints.test.ts`, backend ledger tests, backend e2e "double spend / overdraft race", journeys.
+- Tests: `TransferPage.test.tsx`, `endpoints.test.ts`, backend ledger tests, backend e2e "double spend / overdraft race", `journeys/bank-day.spec.ts`.
 
 ### US-2.6 Manage payees (Customer)
 - AC1 New payees activate after a cooling-off period unless approved instantly with an authenticator code; the first-day cap is explained.
 - AC2 Unknown or unusable account numbers all get the same answer.
 - AC3 I am emailed whenever a payee is added.
-- Tests: `PayeesPage.test.tsx`, backend beneficiary + notification tests, journeys.
+- Tests: `PayeesPage.test.tsx`, backend beneficiary + notification tests, `journeys/bank-day.spec.ts`.
 
 ### US-2.7 Withdraw cash at a branch (Customer → Teller)
 - AC1 I create a one-time 8-digit code for an exact amount and account; it is shown once with a countdown and emailed as a notice.
 - AC2 The teller can only pay out with that code; wrong guesses burn the codes.
-- Tests: `CashWithdrawalPage.test.tsx`, `TellerDeskPage.test.tsx`, backend teller tests, journeys.
+- Tests: `CashWithdrawalPage.test.tsx`, `TellerDeskPage.test.tsx`, backend teller tests, `journeys/bank-day.spec.ts`.
 
 ---
 
@@ -102,12 +102,12 @@ Roles: **Customer**, **Teller**, **KYC officer**, **Fraud analyst**, **Support**
 
 ### US-3.1 Start my day with a counted float (Teller ← Administrator)
 - AC1 An administrator issues an opening float; I count it blind (the issued figure is never shown) and it is booked vault → drawer only if the counts match.
-- Tests: `TellerDeskPage.test.tsx`, `TellerSessionsPage.test.tsx`, backend teller tests, journeys.
+- Tests: `TellerDeskPage.test.tsx`, `TellerSessionsPage.test.tsx`, backend teller tests, `journeys/bank-day.spec.ts`.
 
 ### US-3.2 Take deposits and pay withdrawals (Teller)
 - AC1 I find the account by number, see the holder's name and status, and post the operation with an idempotency key.
 - AC2 Large amounts or my daily total send the operation for a second person's approval (shown as "sent for approval").
-- Tests: `TellerDeskPage.test.tsx`, `TellerOperationsPage.test.tsx`, journeys.
+- Tests: `TellerDeskPage.test.tsx`, `TellerOperationsPage.test.tsx`, `journeys/bank-day.spec.ts`.
 
 ### US-3.3 Close my day (Teller → Administrator)
 - AC1 I declare my drawer count blind; the supervisor counts blind; if the counts agree the cash returns to the vault and any difference goes to suspense.
