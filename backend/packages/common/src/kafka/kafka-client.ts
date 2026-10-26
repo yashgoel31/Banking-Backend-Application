@@ -1,5 +1,5 @@
 import { Kafka, Producer, Consumer, EachMessagePayload, logLevel, Partitioners, LogEntry } from 'kafkajs';
-import { logger } from '../logger/logger';
+import { logger, redactEmails, redactErrorForLog } from '../logger/logger';
 
 export interface KafkaConfig {
   clientId: string;
@@ -7,17 +7,26 @@ export interface KafkaConfig {
 }
 
 export interface SubscribeOptions {
+  /**
+   * Namespace of this consumer's OWN delayed-retry topics, `<retryNamespace>.<topic>.retry` (e.g. "fraud"):
+   * every consumer group parks messages on topics only its service may write and read (Kafka ACLs), so no
+   * other service can inject or replay messages into its retry path.
+   */
+  retryNamespace: string;
   /** Attempts for a message that keeps failing with a NON-transient error before it is dead-lettered */
   maxAttempts?: number;
-  /** How long a transient failure is retried in place before the message moves to `<topic>.retry` (default 15s) */
+  /** How long a transient failure is retried in place before the message is parked on its retry topic (default 15s) */
   transientBudgetMs?: number;
-  /** Delays (ms) for successive hops through `<topic>.retry`; after the last one the message is dead-lettered */
+  /** Delays (ms) for successive hops through the retry topic; after the last one the message is dead-lettered */
   retryDelaysMs?: number[];
+  /** How often the consumer heartbeats while a handler is still running (default 3s) */
+  heartbeatIntervalMs?: number;
 }
 
-/** Envelope for messages parked on `<topic>.retry` */
+/** Envelope for messages parked on a retry topic. Only `hop`, `retryAt` and `payload` are ever read back. */
 interface RetryEnvelope {
   __retry: 1;
+  /** Informational only: the original topic is always derived from the retry topic's name */
   originalTopic: string;
   hop: number;
   retryAt: number;
@@ -25,7 +34,35 @@ interface RetryEnvelope {
   payload: unknown;
 }
 
+/** Error text that is safe to log or store in Kafka (SMTP rejections quote the recipient's address) */
+function errorText(err: unknown): string {
+  return redactEmails(String((err as any)?.message ?? err));
+}
+
 const DEFAULT_RETRY_DELAYS_MS = [60_000, 300_000, 900_000, 1_800_000, 3_600_000, 3_600_000, 3_600_000, 3_600_000];
+const RETRY_NAMESPACE = /^[a-z][a-z0-9-]{0,48}$/;
+
+/** The delayed-retry topic a consumer namespace uses for `topic` */
+export function retryTopicFor(namespace: string, topic: string): string {
+  return `${namespace}.${topic}.retry`;
+}
+
+/**
+ * Validates a message read back from a retry topic. The envelope is not trusted for routing: a message on
+ * `<ns>.<topic>.retry` always belongs to `<topic>`, and an envelope that claims another topic is garbage.
+ */
+function parseRetryEnvelope(
+  value: any,
+  originalTopic: string,
+  maxHops: number
+): { hop: number; retryAt: number; payload: unknown } | null {
+  if (!value || typeof value !== 'object' || value.__retry !== 1) return null;
+  if (value.originalTopic !== undefined && value.originalTopic !== originalTopic) return null;
+  if (!Number.isInteger(value.hop) || value.hop < 1 || value.hop > maxHops) return null;
+  if (typeof value.retryAt !== 'number' || !Number.isFinite(value.retryAt)) return null;
+  if (value.payload === undefined || value.payload === null) return null;
+  return { hop: value.hop, retryAt: value.retryAt, payload: value.payload };
+}
 
 /**
  * Throw this (or any error isTransientError recognises) from a handler to say "the message is fine,
@@ -39,18 +76,40 @@ const TRANSIENT_PRISMA_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P20
 const TRANSIENT_NET_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'ENOTFOUND', 'ESOCKET', 'ECONNECTION', 'ETIMEOUT',
 ]);
+/**
+ * nodemailer codes for mail-infrastructure problems (DNS, TLS, connection, protocol, credentials, pool, config):
+ * every message would fail the same way, so they are retried and never dead-lettered. EAUTH included: a
+ * rotated SMTP password must not dead-letter every notification until someone notices.
+ */
+const SMTP_INFRASTRUCTURE_CODES = new Set([
+  'ECONNECTION', 'ETIMEDOUT', 'ESOCKET', 'EDNS', 'ETLS', 'EREQUIRETLS', 'EPROTOCOL', 'EAUTH', 'ENOAUTH', 'EOAUTH2',
+  'EMAXLIMIT', 'ECONFIG', 'EPROXY',
+]);
+/** nodemailer codes for a rejection of this particular message (its recipients or content) */
+const SMTP_MESSAGE_CODES = new Set(['EENVELOPE', 'EMESSAGE', 'EMAXRECIPIENTS']);
+/** SMTP commands whose 5xx rejects this message rather than our mail setup */
+const SMTP_PER_MESSAGE_COMMAND = /^(RCPT|DATA)\b/i;
 
 /**
- * Infrastructure failures (database/Redis/SMTP unavailable, pool exhausted, lock/deadlock, SMTP 4xx)
- * say nothing about the message itself and must be retried rather than dead-lettered.
+ * Infrastructure failures (database/Redis/SMTP unavailable, pool exhausted, lock/deadlock, SMTP 4xx, SMTP
+ * DNS/TLS/protocol/authentication problems) say nothing about the message itself and must be retried rather
+ * than dead-lettered. Only per-message SMTP rejections are permanent: EENVELOPE / EMESSAGE, or a 5xx reply to
+ * RCPT TO / DATA. A 5xx anywhere else (greeting, EHLO, AUTH, MAIL FROM = our sender) breaks every message.
  */
 export function isTransientError(err: unknown): boolean {
   const e = err as any;
   if (!e) return false;
   if (e.transient === true) return true;
-  if (TRANSIENT_PRISMA_CODES.has(e.code) || TRANSIENT_NET_CODES.has(e.code)) return true;
+  if (TRANSIENT_PRISMA_CODES.has(e.code) || TRANSIENT_NET_CODES.has(e.code) || SMTP_INFRASTRUCTURE_CODES.has(e.code)) return true;
   if (e.name === 'PrismaClientInitializationError' || e.name === 'PrismaClientRustPanicError') return true;
-  if (typeof e.responseCode === 'number' && e.responseCode >= 400 && e.responseCode < 500) return true; // SMTP 4xx
+  const responseCode = typeof e.responseCode === 'number' ? e.responseCode : undefined;
+  if (responseCode !== undefined && responseCode >= 400 && responseCode < 500) return true; // SMTP 4xx: try later
+  const command = String(e.command ?? '');
+  if (SMTP_MESSAGE_CODES.has(e.code)) {
+    // The server refusing OUR sender (MAIL FROM) is a configuration problem shared by every message
+    return responseCode !== undefined && /^MAIL FROM\b/i.test(command);
+  }
+  if (responseCode !== undefined && responseCode >= 500) return !SMTP_PER_MESSAGE_COMMAND.test(command);
   return /Connection is closed|Stream isn't writeable|connect ECONNREFUSED|lock timeout|deadlock detected|could not serialize/i.test(
     String(e.message ?? '')
   );
@@ -154,25 +213,39 @@ export class KafkaService {
    * Subscribes with manual offset commits and keeps the consumers alive (restarted with backoff, never
    * silently left dead). Two consumer groups run per subscription:
    * - `groupId` on the main topics: a transient failure is retried in place only briefly; if the
-   *   dependency stays down the message is parked on `<topic>.retry` and the partition moves on. While a
-   *   dependency is known to be down (circuit open), failing messages are parked after a single try.
-   * - `groupId.retry` on the `<topic>.retry` topics: a message that is not due yet pauses its partition
-   *   (no sleeping inside the handler), and is retried when due; after the last hop it is dead-lettered.
-   * Persistent/poison failures: `maxAttempts` tries, then `<topic>.dlq`.
+   *   dependency stays down the message is parked on `<retryNamespace>.<topic>.retry` and the partition
+   *   moves on. While a dependency is known to be down (circuit open), failing messages are parked after a
+   *   single try.
+   * - `groupId.retry` on those retry topics (this consumer's own, see SubscribeOptions.retryNamespace): a
+   *   message that is not due yet pauses its partition (no sleeping inside the handler), and is retried when
+   *   due; after the last hop it is dead-lettered. The original topic is derived from the retry topic's name,
+   *   never from the message, and anything that is not a valid envelope goes to the original topic's dlq.
+   * Persistent/poison failures: `maxAttempts` tries, then `<topic>.dlq`. Handlers keep the consumer's
+   * session alive with periodic heartbeats while they run.
    */
   public subscribe(
     groupId: string,
     topics: string[],
     messageHandler: (topic: string, payload: any, correlationId?: string) => Promise<void>,
-    options: SubscribeOptions = {}
+    options: SubscribeOptions
   ): void {
-    this.startConsumer(groupId, topics, messageHandler, options, 'main');
-    this.startConsumer(`${groupId}.retry`, topics.map((t) => `${t}.retry`), messageHandler, options, 'retry');
+    if (!RETRY_NAMESPACE.test(options?.retryNamespace ?? '')) {
+      throw new Error(`Invalid Kafka retry namespace '${options?.retryNamespace ?? ''}' (lowercase letters, digits and dashes)`);
+    }
+    this.startConsumer(groupId, new Map(topics.map((t) => [t, t])), messageHandler, options, 'main');
+    this.startConsumer(
+      `${groupId}.retry`,
+      new Map(topics.map((t) => [retryTopicFor(options.retryNamespace, t), t])),
+      messageHandler,
+      options,
+      'retry'
+    );
   }
 
+  /** `routes` maps every consumed topic to the original topic its messages belong to */
   private startConsumer(
     groupId: string,
-    topics: string[],
+    routes: Map<string, string>,
     messageHandler: (topic: string, payload: any, correlationId?: string) => Promise<void>,
     options: SubscribeOptions,
     mode: 'main' | 'retry'
@@ -181,7 +254,7 @@ export class KafkaService {
     let attempt = 0;
     const startOnce = async (): Promise<void> => {
       try {
-        await this.runConsumer(groupId, topics, messageHandler, options, mode);
+        await this.runConsumer(groupId, routes, messageHandler, options, mode);
         attempt = 0;
       } catch (err) {
         if (this.stopping) return;
@@ -197,14 +270,17 @@ export class KafkaService {
 
   private async runConsumer(
     groupId: string,
-    topics: string[],
+    routes: Map<string, string>,
     messageHandler: (topic: string, payload: any, correlationId?: string) => Promise<void>,
     options: SubscribeOptions,
     mode: 'main' | 'retry'
   ): Promise<void> {
+    const topics = [...routes.keys()];
     const maxAttempts = options.maxAttempts ?? 5;
     const transientBudgetMs = options.transientBudgetMs ?? Number(process.env.KAFKA_TRANSIENT_BUDGET_MS || 15_000);
     const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+    const maxRetryDelayMs = Math.max(0, ...retryDelaysMs);
+    const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 3_000;
     const consumer = this.kafka.consumer({ groupId, sessionTimeout: 30_000, heartbeatInterval: 3_000 });
     // Circuit breaker: after a message exhausted its transient budget, assume the dependency is down
     let circuitOpenUntil = 0;
@@ -222,7 +298,7 @@ export class KafkaService {
       this.consumers = this.consumers.filter((c) => c !== consumer);
       consumer.disconnect().catch(() => {});
       setTimeout(() => {
-        if (!this.stopping) this.startConsumer(groupId, topics, messageHandler, options, mode);
+        if (!this.stopping) this.startConsumer(groupId, routes, messageHandler, options, mode);
       }, 5_000).unref();
     });
     consumer.on(consumer.events.GROUP_JOIN, () => this.consumerState.set(groupId, 'running'));
@@ -243,36 +319,48 @@ export class KafkaService {
       eachMessage: async ({ topic, partition, message, heartbeat }: EachMessagePayload) => {
         const commit = () =>
           consumer.commitOffsets([{ topic, partition, offset: (BigInt(message.offset) + 1n).toString() }]);
+        const key = message.key?.toString();
+        const originalTopic = routes.get(topic);
+        if (!originalTopic) {
+          // Only subscribed topics are delivered; never route anything based on an unknown name
+          logger.error({ topic, offset: message.offset }, 'Kafka message from an unexpected topic skipped');
+          await commit();
+          return;
+        }
         const rawValue = message.value?.toString();
         if (!rawValue) {
           await commit();
           return;
         }
 
+        // Garbage goes to the ORIGINAL topic's dead-letter topic (retry topics have no dlq of their own)
         let parsed: any;
         try {
           parsed = JSON.parse(rawValue);
         } catch {
           logger.error({ topic, offset: message.offset }, 'Malformed JSON Kafka message routed to DLQ');
-          await this.sendToDlq(topic, message.key?.toString(), rawValue, 'Malformed JSON');
+          await this.sendToDlq(originalTopic, key, rawValue, 'Malformed JSON');
           await commit();
           return;
         }
 
-        let originalTopic = topic;
         let payload: any = parsed;
         let hop = 0;
         if (mode === 'retry') {
-          if (parsed?.__retry !== 1) {
-            await this.sendToDlq(topic, message.key?.toString(), rawValue, 'Not a retry envelope');
+          const envelope = parseRetryEnvelope(parsed, originalTopic, retryDelaysMs.length);
+          if (!envelope) {
+            logger.error({ topic, offset: message.offset }, 'Invalid retry envelope routed to DLQ');
+            await this.sendToDlq(originalTopic, key, rawValue, `Invalid retry envelope on ${topic}`);
             await commit();
             return;
           }
-          const envelope = parsed as RetryEnvelope;
-          originalTopic = envelope.originalTopic;
           payload = envelope.payload;
           hop = envelope.hop;
-          const waitMs = envelope.retryAt - Date.now();
+          // A message is never held longer than the longest retry delay after it was parked, so a bad retryAt
+          // can't stall its partition (the parked time is the record timestamp, capped at now)
+          const parkedAt = Math.min(Number(message.timestamp) || Date.now(), Date.now());
+          const retryAt = Math.min(envelope.retryAt, parkedAt + maxRetryDelayMs);
+          const waitMs = retryAt - Date.now();
           if (waitMs > 0) {
             // Not due yet: rewind to this message, pause the partition and resume when it is due
             consumer.seek({ topic, partition, offset: message.offset });
@@ -287,13 +375,24 @@ export class KafkaService {
         const budget = Date.now() < circuitOpenUntil ? 0 : transientBudgetMs;
         const transientDeadline = Date.now() + budget;
 
+        // A slow handler (e.g. SMTP at its timeouts) must not cost the consumer its group membership
+        const handle = async () => {
+          const beat = setInterval(() => void heartbeat().catch(() => {}), heartbeatIntervalMs);
+          beat.unref?.();
+          try {
+            await messageHandler(originalTopic, payload, correlationId);
+          } finally {
+            clearInterval(beat);
+          }
+        };
+
         let failures = 0;
         let transientRetries = 0;
         let lastError: unknown;
         for (;;) {
           if (this.stopping) throw new Error('Consumer stopping; message will be redelivered');
           try {
-            await messageHandler(originalTopic, payload, correlationId);
+            await handle();
             circuitOpenUntil = 0;
             await commit();
             return;
@@ -303,23 +402,32 @@ export class KafkaService {
             if (transient) transientRetries++;
             else failures++;
             logger.warn(
-              { err: error, topic: originalTopic, partition, offset: message.offset, transient, failures, transientRetries, hop },
+              {
+                err: redactErrorForLog(error),
+                topic: originalTopic,
+                partition,
+                offset: message.offset,
+                transient,
+                failures,
+                transientRetries,
+                hop,
+              },
               'Consumer processing error'
             );
             if (!transient && failures >= maxAttempts) break;
             if (transient && Date.now() >= transientDeadline) {
               circuitOpenUntil = Date.now() + 30_000;
-              // Don't block the partition: park the message on the retry topic and move on
+              // Don't block the partition: park the message on this consumer's retry topic and move on
               if (hop < retryDelaysMs.length) {
                 const envelope: RetryEnvelope = {
                   __retry: 1,
                   originalTopic,
                   hop: hop + 1,
                   retryAt: Date.now() + retryDelaysMs[hop],
-                  lastError: String((error as any)?.message ?? error).slice(0, 500),
+                  lastError: errorText(error).slice(0, 500),
                   payload,
                 };
-                await this.publishEvent(`${originalTopic}.retry`, message.key?.toString() || 'unknown', envelope);
+                await this.publishEvent(retryTopicFor(options.retryNamespace, originalTopic), key || 'unknown', envelope);
                 logger.warn({ topic: originalTopic, hop: hop + 1 }, 'Message moved to retry topic after transient failures');
                 await commit();
                 return;
@@ -334,7 +442,7 @@ export class KafkaService {
           }
         }
 
-        await this.sendToDlq(originalTopic, message.key?.toString(), JSON.stringify(payload), String((lastError as any)?.message ?? lastError));
+        await this.sendToDlq(originalTopic, key, JSON.stringify(payload), errorText(lastError));
         await commit();
       },
     });
@@ -347,13 +455,14 @@ export class KafkaService {
 
   private async sendToDlq(topic: string, key: string | undefined, rawValue: string, reason: string): Promise<void> {
     // Throws if the DLQ itself is unreachable: the offset is then not committed and the message is redelivered
+    const failureReason = redactEmails(reason).slice(0, 1000);
     await this.publishEvent(`${topic}.dlq`, key || 'unknown', {
       originalTopic: topic,
-      failureReason: reason.slice(0, 1000),
+      failureReason,
       failedAt: new Date().toISOString(),
       rawValue,
     });
-    logger.error({ topic, reason }, 'Message routed to dead-letter topic');
+    logger.error({ topic, reason: failureReason }, 'Message routed to dead-letter topic');
   }
 
   public async disconnect(): Promise<void> {
