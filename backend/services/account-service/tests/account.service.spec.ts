@@ -7,6 +7,7 @@ import {
   BadGatewayError,
   HttpError,
   AuthenticatedUser,
+  logger,
 } from '@banksphere/common';
 import { AccountType, AccountStatus } from '../generated/client';
 
@@ -81,6 +82,21 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
       const corrupted = valid.slice(0, 11) + ((Number(valid.slice(-1)) + 1) % 10).toString();
       expect(AccountNumberGenerator.validate(corrupted)).toBe(false);
     });
+
+    it('NUMBER SPACE: 10 random digits after a 1-digit prefix (not a fixed 4-digit prefix + 7 digits)', () => {
+      const numbers = Array.from({ length: 300 }, () => AccountNumberGenerator.generate());
+      for (const n of numbers) expect(n).toMatch(/^2\d{11}$/);
+      // Digits 2-4 were the fixed "001" of the old branch prefix; they must now be random too
+      expect(new Set(numbers.map((n) => n.slice(1, 4))).size).toBeGreaterThan(100);
+      expect(new Set(numbers).size).toBe(numbers.length);
+    });
+
+    it('numbers issued in the old format stay valid', () => {
+      // 1001 + 7 digits + Luhn, as issued before the format change
+      const legacyPayload = '10012345678';
+      const legacy = [...Array(10).keys()].map((d) => legacyPayload + d).filter((n) => AccountNumberGenerator.validate(n));
+      expect(legacy).toHaveLength(1);
+    });
   });
 
   describe('createAccount', () => {
@@ -112,6 +128,54 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
     it('enforces the open-account cap inside the transaction', async () => {
       mockPrisma.bankAccount.count.mockResolvedValue(5);
       await expect(accountService.createAccount({ customerId: 'alice-cust-id' }, alice)).rejects.toThrow(ConflictError);
+      // A business refusal is not a number collision: no retry
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('NUMBER COLLISION: a local unique violation is retried with a fresh number', async () => {
+      mockPrisma.bankAccount.create.mockImplementationOnce(() => {
+        throw Object.assign(new Error('Unique constraint failed on the fields: (`account_number`)'), { code: 'P2002' });
+      });
+      const created = await accountService.createAccount({ customerId: 'alice-cust-id' }, alice);
+      expect(mockPrisma.bankAccount.create).toHaveBeenCalledTimes(2);
+      expect(created.accountNumber).toBe(mockPrisma.bankAccount.create.mock.calls[1][0].data.accountNumber);
+    });
+
+    it('NUMBER COLLISION: a number the ledger already holds (orphaned ledger account, 409) is retried too', async () => {
+      mockLedger.provisionAccount.mockRejectedValueOnce(new HttpError(409, 'CONFLICT', 'Resource already exists'));
+      const created = await accountService.createAccount({ customerId: 'alice-cust-id' }, alice);
+      expect(mockLedger.provisionAccount).toHaveBeenCalledTimes(2);
+      const [first, second] = mockLedger.provisionAccount.mock.calls.map(([input]: any) => input);
+      expect(second.accountNumber).not.toBe(first.accountNumber);
+      expect(second.id).not.toBe(first.id);
+      expect(created.accountNumber).toBe(second.accountNumber);
+    });
+
+    it('gives up with a 409 when every attempt collides', async () => {
+      mockLedger.provisionAccount.mockRejectedValue(new HttpError(409, 'CONFLICT', 'Resource already exists'));
+      await expect(accountService.createAccount({ customerId: 'alice-cust-id' }, alice)).rejects.toThrow('unique account number');
+      expect(mockLedger.updateAccount).not.toHaveBeenCalled();
+    });
+
+    it('AFTER COMMIT: a failed ledger activation still returns the created account (no 502 inviting a duplicate)', async () => {
+      mockLedger.updateAccount.mockRejectedValue(new BadGatewayError('Ledger service is unreachable'));
+      const alert = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      const created = await accountService.createAccount({ customerId: 'alice-cust-id' }, alice);
+      expect(created.id).toBeDefined();
+      expect(created.status).toBe(AccountStatus.ACTIVE);
+      expect(mockPrisma.outboxEvent.create).toHaveBeenCalledTimes(1);
+      // Left for reconcileWithLedger(), and raised so someone notices
+      expect(alert).toHaveBeenCalledWith(expect.objectContaining({ accountId: created.id, alert: 'ACCOUNT_LEDGER_ACTIVATION_FAILED' }), expect.any(String));
+      alert.mockRestore();
+    });
+
+    it('AFTER COMMIT: an activation the ledger did not apply is not treated as success, but the account is returned', async () => {
+      mockLedger.updateAccount.mockResolvedValue({ applied: false });
+      const alert = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      const created = await accountService.createAccount({ customerId: 'alice-cust-id' }, alice);
+      expect(created.id).toBeDefined();
+      expect(alert).toHaveBeenCalledWith(expect.objectContaining({ accountId: created.id, alert: 'ACCOUNT_LEDGER_ACTIVATION_NOT_APPLIED' }), expect.any(String));
+      alert.mockRestore();
     });
   });
 
