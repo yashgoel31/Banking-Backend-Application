@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import net from 'net';
 import { EnrolmentPurpose, Prisma, PrismaClient, Role, User } from '../../generated/client';
 import {
   AuthenticatedUser,
@@ -10,8 +11,11 @@ import {
   RateLimitExceededError,
   TokenStateStore,
   UnauthorizedError,
+  isAddressAllowed,
   isStaffRole,
   logger,
+  staffNetworkError,
+  staffNetworksFromEnv,
 } from '@banksphere/common';
 import { PasswordService } from './password.service';
 import { TokenService, GeneratedTokens } from './token.service';
@@ -41,6 +45,8 @@ export interface LoginDTO {
 export interface LoginContext {
   /** Normalised client network (IPv4 address or IPv6 /64) used for lockout keying */
   network: string;
+  /** Client address, checked against the staff network allowlist (unknown = outside it) */
+  ip?: string;
 }
 
 export interface PublicUser {
@@ -69,6 +75,8 @@ export interface AuthServiceConfig {
   enrolmentTtlHours: number;
   /** When set, staff accounts must use this email domain (e.g. "bank.example") */
   staffEmailDomain: string;
+  /** STAFF_ALLOWED_CIDRS: staff may only sign in from these networks (null/absent = anywhere) */
+  staffNetworks?: net.BlockList | null;
 }
 
 export const defaultAuthServiceConfig = (): AuthServiceConfig => ({
@@ -79,6 +87,7 @@ export const defaultAuthServiceConfig = (): AuthServiceConfig => ({
   mfaChallengeTtlSeconds: 300,
   enrolmentTtlHours: Number(process.env.STAFF_ENROLMENT_TTL_HOURS || 24),
   staffEmailDomain: (process.env.STAFF_EMAIL_DOMAIN || '').toLowerCase(),
+  staffNetworks: staffNetworksFromEnv(),
 });
 
 export interface AuthServiceDeps {
@@ -376,6 +385,10 @@ export class AuthService {
       throw new UnauthorizedError(INVALID_CREDENTIALS);
     }
 
+    // Only revealed after a correct password, so it doesn't leak whether an email is a staff account.
+    // Not a successful sign-in: the attempt isn't refunded and the network isn't remembered.
+    this.assertStaffNetwork(user, ctx);
+
     await this.security.loginSucceeded(email, ctx.network);
 
     if (!user.isEmailVerified) {
@@ -398,7 +411,7 @@ export class AuthService {
    * verification; codes are single-use; and a per-user failure budget (independent of the password) pauses
    * TOTP sign-in after repeated failures and alerts the user.
    */
-  public async completeMfaLogin(challengeToken: string, code: string): Promise<AuthResponse> {
+  public async completeMfaLogin(challengeToken: string, code: string, ctx: LoginContext): Promise<AuthResponse> {
     const invalid = () => new UnauthorizedError('Invalid or expired verification code');
     const challenge = await this.security.consumeMfaChallengeAttempt(challengeToken);
     if (!challenge) throw invalid();
@@ -414,6 +427,8 @@ export class AuthService {
       await this.security.deleteMfaChallenge(challengeToken);
       throw invalid();
     }
+    // The challenge proves the password; checked before the code so TOTP can't be tried off-network
+    this.assertStaffNetwork(user, ctx);
 
     const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
     if (step === null || !(await this.consumeTotpStep(user.id, step))) {
@@ -953,6 +968,14 @@ export class AuthService {
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
+
+  /** Staff sign in only from STAFF_ALLOWED_CIDRS (every service refuses staff tokens from elsewhere too) */
+  private assertStaffNetwork(user: User, ctx: LoginContext): void {
+    const networks = this.config.staffNetworks;
+    if (!networks || !isStaffRole(user.role) || isAddressAllowed(networks, ctx.ip)) return;
+    logger.warn({ userId: user.id, role: user.role, alert: 'STAFF_LOGIN_OFF_NETWORK' }, 'Staff sign-in from a non-allowed network');
+    throw staffNetworkError('Staff sign-in is only available from the staff network');
+  }
 
   private async requireActiveUser(userId: string): Promise<User> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });

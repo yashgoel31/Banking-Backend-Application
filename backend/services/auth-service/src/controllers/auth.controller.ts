@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { clientIpKey, getAuthenticatedUser, parsePagination, readBearerToken, verifyAccessToken } from '@banksphere/common';
-import { AuthService } from '../services/auth.service';
+import { AuthService, LoginContext } from '../services/auth.service';
 import { AdminRequestService } from '../services/admin-requests.service';
 
 const emailSchema = z
@@ -60,6 +60,9 @@ const changePasswordSchema = z
 const userIdParamsSchema = z.object({ userId: z.string().uuid() });
 const userStatusSchema = z.object({ isActive: z.boolean() }).strict();
 
+/** Client network for lockouts, and the client address for the staff network allowlist */
+const loginContext = (req: Request): LoginContext => ({ network: clientIpKey(req.ip), ip: req.ip });
+
 type Handler = (req: Request, res: Response) => Promise<void>;
 const wrap =
   (fn: Handler) =>
@@ -92,13 +95,13 @@ export class AuthController {
 
   public login = wrap(async (req, res) => {
     const validated = loginSchema.parse(req.body);
-    const result = await this.authService.login(validated, { network: clientIpKey(req.ip) });
+    const result = await this.authService.login(validated, loginContext(req));
     res.status(200).json({ success: true, data: result });
   });
 
   public loginMfa = wrap(async (req, res) => {
     const { challengeToken, code } = mfaLoginSchema.parse(req.body);
-    const result = await this.authService.completeMfaLogin(challengeToken, code);
+    const result = await this.authService.completeMfaLogin(challengeToken, code, loginContext(req));
     res.status(200).json({ success: true, data: result });
   });
 

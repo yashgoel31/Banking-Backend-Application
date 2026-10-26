@@ -22,6 +22,8 @@ x-service-env: &service-env
   NODE_ENV: production
   LOG_LEVEL: ${LOG_LEVEL:-info}
   TRUST_PROXY: "1" # requests arrive through the API gateway
+  # Staff tokens are refused from outside these networks on every route (by role, not path)
+  STAFF_ALLOWED_CIDRS: ${STAFF_ALLOWED_CIDRS:?set STAFF_ALLOWED_CIDRS in .env}
   JWT_VERIFY_KEYS: ${JWT_VERIFY_KEYS:?set JWT_VERIFY_KEYS in .env}
   # Read-only Redis ACL user (token versions + revoked jtis); auth and customer override it
   REDIS_URL: redis://reader:${REDIS_READER_PASSWORD:?set REDIS_READER_PASSWORD in .env}@redis:6379

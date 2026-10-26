@@ -11,6 +11,7 @@ import {
   createAuthenticate,
   errorHandlerMiddleware,
   generateJwtKeyPair,
+  parseCidrs,
   verifyAccessToken,
   signAccessToken,
 } from '@banksphere/common';
@@ -31,7 +32,7 @@ import { createApp } from '../src/app';
 
 const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 const tokenFromEmail = (text: string) => decodeURIComponent(/#token=([A-Za-z0-9_%-]+)/.exec(text)![1]);
-const NET = { network: '203.0.113.7' };
+const NET = { network: '203.0.113.7', ip: '203.0.113.7' };
 
 function buildMockPrisma() {
   const prisma: any = {
@@ -132,6 +133,17 @@ describe('AuthService', () => {
     });
   });
 
+  /** The same service, with staff restricted to 10.20.0.0/16 */
+  const withStaffNetwork = () =>
+    new AuthService({
+      prisma,
+      tokenService: new TokenService(),
+      tokenState,
+      security,
+      mailer,
+      config: { ...authService.config, staffNetworks: parseCidrs('10.20.0.0/16') },
+    });
+
   describe('register', () => {
     it('creates an unverified CUSTOMER, stages user.registered.v1, audits and emails a verification link', async () => {
       prisma.user.create.mockImplementation(({ data }: any) => activeUser({ ...data, isEmailVerified: false }));
@@ -218,6 +230,22 @@ describe('AuthService', () => {
       const result: any = await authService.login({ email: 'alice@bank.com', password: 'Password1234' }, { network: 'owner-home' });
       expect(result.tokens.accessToken).toBeDefined();
     });
+
+    it('STAFF NETWORK: a staff password only signs in from STAFF_ALLOWED_CIDRS, revealed only after a correct password', async () => {
+      const service = withStaffNetwork();
+      const passwordHash = await PasswordService.hash('Password1234');
+      prisma.user.findUnique.mockResolvedValue(activeUser({ role: 'TELLER', passwordHash }));
+      const outside = { network: '203.0.113.7', ip: '203.0.113.7' };
+      await expect(service.login({ email: 'alice@bank.com', password: 'Wrong1234567' }, outside)).rejects.toThrow(UnauthorizedError);
+      await expect(service.login({ email: 'alice@bank.com', password: 'Password1234' }, outside)).rejects.toMatchObject({ statusCode: 403, errorCode: 'NETWORK_NOT_ALLOWED' });
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+
+      const inside: any = await service.login({ email: 'alice@bank.com', password: 'Password1234' }, { network: '10.20.1.2', ip: '::ffff:10.20.1.2' });
+      expect(inside.tokens.accessToken).toBeDefined();
+      // Customers sign in from anywhere
+      prisma.user.findUnique.mockResolvedValue(activeUser({ passwordHash }));
+      expect(((await service.login({ email: 'alice@bank.com', password: 'Password1234' }, outside)) as any).tokens).toBeDefined();
+    });
   });
 
   describe('MFA (TOTP)', () => {
@@ -241,7 +269,7 @@ describe('AuthService', () => {
       expect(step1.mfaRequired).toBe(true);
       expect(step1.tokens).toBeUndefined();
 
-      const result = await authService.completeMfaLogin(step1.challengeToken, totpAt(secret, currentStep()));
+      const result = await authService.completeMfaLogin(step1.challengeToken, totpAt(secret, currentStep()), NET);
       expect(verifyAccessToken(result.tokens.accessToken).mfa).toBe(true);
     });
 
@@ -251,7 +279,21 @@ describe('AuthService', () => {
       prisma.user.findUniqueOrThrow.mockResolvedValue(enrolledUser(secret));
       const challenge = await security.createMfaChallenge('u1', 0, 300);
       prisma.user.updateMany.mockResolvedValueOnce({ count: 0 }); // the step was already consumed
-      await expect(authService.completeMfaLogin(challenge, totpAt(secret, currentStep()))).rejects.toThrow(UnauthorizedError);
+      await expect(authService.completeMfaLogin(challenge, totpAt(secret, currentStep()), NET)).rejects.toThrow(UnauthorizedError);
+    });
+
+    it('STAFF NETWORK: an MFA login is only completed from STAFF_ALLOWED_CIDRS, before the code is even checked', async () => {
+      const service = withStaffNetwork();
+      const secret = generateTotpSecret();
+      prisma.user.findUnique.mockResolvedValue(enrolledUser(secret, { role: 'BANK_ADMIN' }));
+      prisma.user.findUniqueOrThrow.mockResolvedValue(enrolledUser(secret, { role: 'BANK_ADMIN' }));
+      const challenge = await security.createMfaChallenge('u1', 0, 300);
+      const code = totpAt(secret, currentStep());
+      await expect(service.completeMfaLogin(challenge, code, { network: '203.0.113.7', ip: '203.0.113.7' })).rejects.toMatchObject({ errorCode: 'NETWORK_NOT_ALLOWED' });
+      expect(prisma.user.updateMany).not.toHaveBeenCalled(); // the code was not consumed
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+      const ok = await service.completeMfaLogin(challenge, code, { network: '10.20.1.2', ip: '10.20.1.2' });
+      expect(verifyAccessToken(ok.tokens.accessToken).mfa).toBe(true);
     });
 
     it('a challenge dies after 5 wrong codes', async () => {
@@ -259,7 +301,7 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(enrolledUser(secret));
       const challenge = await security.createMfaChallenge('u1', 0, 300);
       for (let i = 0; i < 5; i++) {
-        await expect(authService.completeMfaLogin(challenge, '000000')).rejects.toThrow(UnauthorizedError);
+        await expect(authService.completeMfaLogin(challenge, '000000', NET)).rejects.toThrow(UnauthorizedError);
       }
       // The challenge is gone: even a correct code can no longer use it
       expect(await security.consumeMfaChallengeAttempt(challenge)).toBeNull();
@@ -320,10 +362,10 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(enrolledUser(secret));
       for (let i = 0; i < 10; i++) {
         const challenge = await security.createMfaChallenge('u1', 0, 300);
-        await expect(authService.completeMfaLogin(challenge, '000000')).rejects.toThrow(UnauthorizedError);
+        await expect(authService.completeMfaLogin(challenge, '000000', NET)).rejects.toThrow(UnauthorizedError);
       }
       const fresh = await security.createMfaChallenge('u1', 0, 300);
-      await expect(authService.completeMfaLogin(fresh, totpAt(secret, currentStep()))).rejects.toThrow('Too many failed verification codes');
+      await expect(authService.completeMfaLogin(fresh, totpAt(secret, currentStep()), NET)).rejects.toThrow('Too many failed verification codes');
     });
 
     it('MFA login tokens carry a fresh step-up time and the factor enrolment time', async () => {
@@ -332,7 +374,7 @@ describe('AuthService', () => {
       const user = enrolledUser(secret, { passwordHash: await PasswordService.hash('Password1234'), mfaEnabledAt: enrolledAt });
       prisma.user.findUnique.mockResolvedValue(user);
       const step1: any = await authService.login({ email: 'alice@bank.com', password: 'Password1234' }, NET);
-      const result = await authService.completeMfaLogin(step1.challengeToken, totpAt(secret, currentStep()));
+      const result = await authService.completeMfaLogin(step1.challengeToken, totpAt(secret, currentStep()), NET);
       const claims = verifyAccessToken(result.tokens.accessToken);
       expect(Math.abs(claims.stepUpAt! - Date.now() / 1000)).toBeLessThan(5);
       expect(claims.mfaSince).toBe(Math.floor(enrolledAt.getTime() / 1000));
@@ -364,7 +406,7 @@ describe('AuthService', () => {
       const secret = generateTotpSecret();
       prisma.user.findUnique.mockResolvedValue(enrolledUser(secret, { tokenVersion: 1 })); // reset happened: version 0 -> 1
       const challenge = await security.createMfaChallenge('u1', 0, 300); // issued before the reset
-      await expect(authService.completeMfaLogin(challenge, totpAt(secret, currentStep()))).rejects.toThrow(UnauthorizedError);
+      await expect(authService.completeMfaLogin(challenge, totpAt(secret, currentStep()), NET)).rejects.toThrow(UnauthorizedError);
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
@@ -658,6 +700,80 @@ describe('createAuthenticate', () => {
   it('FAIL CLOSED: 503 when the token store is unavailable', async () => {
     const app = build({ isAccessTokenRevoked: () => Promise.reject(new Error('redis down')) });
     expect((await request(app).get('/x').set('Authorization', `Bearer ${tokenFor('CUSTOMER', false)}`)).status).toBe(503);
+  });
+
+  describe('STAFF NETWORK (by role, not by path)', () => {
+    // Services sit behind the gateway (TRUST_PROXY=1), which overwrites X-Forwarded-For with the client IP
+    const behindGateway = (options?: any) => {
+      const app = express();
+      app.set('trust proxy', 1);
+      const store = new InMemoryTokenStateStore();
+      // Paths that share prefixes with customer routes: a path allowlist at the gateway can't tell them apart
+      app.patch('/api/v1/customers/:userId/kyc', createAuthenticate(store, options), (_req, res) => res.json({ ok: true }));
+      app.get('/api/v1/transactions/accounts/:id/balance', createAuthenticate(store, options), (_req, res) => res.json({ ok: true }));
+      app.post('/mfa/setup', createAuthenticate(store, { ...options, allowStaffWithoutMfa: true }), (_req, res) => res.json({ ok: true }));
+      app.use(errorHandlerMiddleware);
+      return app;
+    };
+
+    afterEach(() => {
+      delete process.env.STAFF_ALLOWED_CIDRS;
+    });
+
+    it('refuses staff tokens from outside STAFF_ALLOWED_CIDRS on any route, with the gateway error shape', async () => {
+      process.env.STAFF_ALLOWED_CIDRS = '10.20.0.0/16';
+      const app = behindGateway();
+      const kyc = await request(app).patch('/api/v1/customers/u2/kyc').set('X-Forwarded-For', '203.0.113.9').set('Authorization', `Bearer ${tokenFor('KYC_OFFICER', true)}`);
+      expect(kyc.status).toBe(403);
+      expect(kyc.body.error).toEqual({ code: 'NETWORK_NOT_ALLOWED', message: expect.any(String), correlationId: expect.any(String) });
+      const balance = await request(app).get('/api/v1/transactions/accounts/a1/balance').set('X-Forwarded-For', '203.0.113.9').set('Authorization', `Bearer ${tokenFor('SUPPORT', true)}`);
+      expect(balance.body.error.code).toBe('NETWORK_NOT_ALLOWED');
+      // Enrolment routes too: a staff password alone, from anywhere, must not even reach MFA enrolment
+      const enrol = await request(app).post('/mfa/setup').set('X-Forwarded-For', '203.0.113.9').set('Authorization', `Bearer ${tokenFor('TELLER', false)}`);
+      expect(enrol.body.error.code).toBe('NETWORK_NOT_ALLOWED');
+
+      const inside = await request(app).get('/api/v1/transactions/accounts/a1/balance').set('X-Forwarded-For', '10.20.4.5').set('Authorization', `Bearer ${tokenFor('SUPPORT', true)}`);
+      expect(inside.status).toBe(200);
+    });
+
+    it('customers are never restricted by the staff allowlist', async () => {
+      process.env.STAFF_ALLOWED_CIDRS = '10.20.0.0/16';
+      const res = await request(behindGateway()).get('/api/v1/transactions/accounts/a1/balance').set('X-Forwarded-For', '203.0.113.9').set('Authorization', `Bearer ${tokenFor('CUSTOMER', false)}`);
+      expect(res.status).toBe(200);
+    });
+
+    it('normalises IPv4-mapped IPv6 client addresses; unset means unrestricted', async () => {
+      // supertest connects over loopback: req.ip is "::ffff:127.0.0.1" on a dual-stack listener
+      const direct = (cidrs: string | null) => {
+        const app = express();
+        app.get('/x', createAuthenticate(new InMemoryTokenStateStore(), { staffNetworks: cidrs === null ? null : parseCidrs(cidrs) }), (_req, res) => res.json({ ok: true }));
+        app.use(errorHandlerMiddleware);
+        return app;
+      };
+      const staff = `Bearer ${tokenFor('BANK_ADMIN', true)}`;
+      expect((await request(direct('127.0.0.0/8')).get('/x').set('Authorization', staff)).status).toBe(200);
+      expect((await request(direct('10.20.0.0/16')).get('/x').set('Authorization', staff)).status).toBe(403);
+      expect((await request(direct(null)).get('/x').set('Authorization', staff)).status).toBe(200);
+    });
+
+    it('is required in production, like at the gateway', () => {
+      const saved = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        expect(() => createAuthenticate(new InMemoryTokenStateStore())).toThrow('STAFF_ALLOWED_CIDRS');
+        process.env.STAFF_ALLOWED_CIDRS = '10.0.0.0/8';
+        expect(() => createAuthenticate(new InMemoryTokenStateStore())).not.toThrow();
+      } finally {
+        process.env.NODE_ENV = saved;
+      }
+    });
+
+    it('rejects malformed allowlist entries at startup', () => {
+      expect(() => parseCidrs('10.0.0.0/33')).toThrow('STAFF_ALLOWED_CIDRS');
+      expect(() => parseCidrs('10.0.0.0/8,not-an-ip')).toThrow('STAFF_ALLOWED_CIDRS');
+      expect(() => parseCidrs('fd00::/129')).toThrow('STAFF_ALLOWED_CIDRS');
+      expect(parseCidrs(' ')).toBeNull();
+    });
   });
 });
 
