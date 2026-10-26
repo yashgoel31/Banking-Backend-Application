@@ -166,18 +166,21 @@ export class TransactionController {
   public withdraw = wrap(async (req, res) => {
     const actor = getAuthenticatedUser(req);
     const body = withdrawSchema.parse(req.body);
-    await this.runIdempotent(req, res, 'withdrawal', body, async (tx) =>
-      cashResponse(
-        await this.tellerService.requestCashOperation(
-          {
-            type: 'WITHDRAWAL',
-            accountId: body.accountId,
-            amountInPaise: BigInt(body.amountInPaise),
-            description: body.description,
-            authorizationCode: body.authorizationCode,
-          },
-          actor,
-          tx
+    // A wrong code is counted only after the idempotent transaction has rolled back (one connection at a time)
+    await this.tellerService.recordingCodeFailures(() =>
+      this.runIdempotent(req, res, 'withdrawal', body, async (tx) =>
+        cashResponse(
+          await this.tellerService.requestCashOperation(
+            {
+              type: 'WITHDRAWAL',
+              accountId: body.accountId,
+              amountInPaise: BigInt(body.amountInPaise),
+              description: body.description,
+              authorizationCode: body.authorizationCode,
+            },
+            actor,
+            tx
+          )
         )
       )
     );

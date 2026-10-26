@@ -4,6 +4,7 @@ import { TellerService } from '../src/services/teller.service';
 import { BeneficiaryService } from '../src/services/beneficiary.service';
 import { LedgerPolicy, defaultLedgerPolicy, istBusinessDate } from '../src/services/ledger-core';
 import { IdempotencyService } from '../src/services/idempotency.service';
+import { TransactionController } from '../src/controllers/transaction.controller';
 import {
   InsufficientFundsError,
   SameAccountTransferError,
@@ -127,6 +128,7 @@ function buildPrisma(rows: any[], owners: Record<string, string>, drawerBalance 
     },
     outboxEvent: { create: jest.fn() },
     auditLog: { create: jest.fn(), count: jest.fn().mockResolvedValue(1) },
+    idempotencyRecord: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn(), update: jest.fn(), deleteMany: jest.fn() },
     cashOperation: {
       create: jest.fn(({ data }: any) => ({ id: data.id ?? 'op-1', createdAt: new Date(), ...data })),
       update: jest.fn(),
@@ -147,7 +149,10 @@ function buildPrisma(rows: any[], owners: Record<string, string>, drawerBalance 
  * client while a transaction is open would need a second pooled connection; those are listed in
  * `secondConnection`. Configure the mocks as usual (on `prisma`), before or after calling this.
  */
-function transactional(prisma: any, models = ['auditLog', 'tellerSession', 'outboxEvent', 'beneficiary', 'withdrawalAuthorization']) {
+function transactional(
+  prisma: any,
+  models = ['auditLog', 'tellerSession', 'outboxEvent', 'beneficiary', 'withdrawalAuthorization', 'idempotencyRecord']
+) {
   const viaTx = new Set<unknown>();
   const rolledBack = new Set<unknown>();
   const secondConnection: string[] = [];
@@ -380,6 +385,35 @@ describe('TellerService: cash operations (drawer, session, maker-checker)', () =
       .requestCashOperation({ type: 'WITHDRAWAL', accountId: 'acc-1', amountInPaise: 50_000n, authorizationCode: '00000000' }, teller)
       .catch(() => {});
     expect(prisma.withdrawalAuthorization.updateMany).toHaveBeenCalledWith({ where: { accountId: 'acc-1', usedAt: null }, data: { usedAt: expect.any(Date) } });
+  });
+
+  it('POOL: a wrong code needs one connection at a time; the failure is recorded after the money transaction rolled back', async () => {
+    const ACC = '11111111-1111-4111-8111-111111111111';
+    const issuedAt = new Date(Date.now() - 60_000);
+    const prisma = buildPrisma([row(ACC, 1_000_000n, 'alice')], { [ACC]: 'alice' });
+    prisma.withdrawalAuthorization.findFirst.mockResolvedValue({ id: 'auth-1', amount: 50_000n, codeHash: 'x'.repeat(64), createdAt: issuedAt });
+    prisma.auditLog.count.mockResolvedValue(5); // this failure is the fifth since the code was issued
+    const db = transactional(prisma);
+    const tellerService = new TellerService(prisma, policy);
+    const controller = new TransactionController({} as any, tellerService, {} as any, new IdempotencyService(prisma));
+    const req: any = {
+      user: teller,
+      body: { accountId: ACC, amountInPaise: '50000', authorizationCode: '00000000' },
+      header: (name: string) => (name === 'Idempotency-Key' ? 'withdraw-key-0001' : undefined),
+    };
+    const res: any = { setHeader: jest.fn(), status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const err: any = await new Promise((resolve) => controller.withdraw(req, res, resolve));
+
+    expect(err.errorCode).toBe('WITHDRAWAL_NOT_AUTHORISED');
+    expect(db.secondConnection).toEqual([]);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2); // the refused withdrawal, then the failure record
+    expect(db.committed('idempotencyRecord', 'create')).toEqual([]); // the claim rolled back: the key stays usable
+    expect(db.audits()).toEqual(['WITHDRAWAL_CODE_FAILED']);
+    expect(db.committed('auditLog', 'create')[0].data).toEqual(expect.objectContaining({ actorId: 'teller', targetId: ACC }));
+    expect(prisma.auditLog.count).toHaveBeenCalledWith({ where: { action: 'WITHDRAWAL_CODE_FAILED', targetId: ACC, createdAt: { gte: issuedAt } } });
+    expect(db.committed('withdrawalAuthorization', 'updateMany')).toEqual([{ where: { accountId: ACC, usedAt: null }, data: { usedAt: expect.any(Date) } }]);
+    expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
   });
 
   it('the requester cannot approve their own request; a different admin can', async () => {

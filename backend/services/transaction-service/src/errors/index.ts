@@ -58,6 +58,23 @@ export class DailyLimitExceededError extends AppError {
   }
 }
 
+/**
+ * A wrong code (or amount) for an outstanding withdrawal authorisation. Thrown inside the money
+ * transaction; the failure is counted only after that transaction has rolled back (see TellerService).
+ */
+export class WithdrawalCodeRejectedError extends AppError {
+  readonly statusCode = 403;
+  readonly errorCode = 'WITHDRAWAL_NOT_AUTHORISED';
+
+  constructor(
+    readonly accountId: string,
+    readonly authorizationCreatedAt: Date,
+    readonly tellerId: string
+  ) {
+    super('A valid customer withdrawal code for this account and amount is required');
+  }
+}
+
 export class CurrencyMismatchError extends AppError {
   readonly statusCode = 400;
   readonly errorCode = 'CURRENCY_MISMATCH';

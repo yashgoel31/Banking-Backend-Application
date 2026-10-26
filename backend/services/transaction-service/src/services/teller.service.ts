@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { PrismaClient, Prisma, TellerSession } from '../../generated/client';
 import { AuthenticatedUser, ConflictError, ForbiddenError, HttpError, logger } from '@banksphere/common';
 import { CashOperationDTO, CashOperationResult, TransactionResult, TransactionStatus, TransactionType } from '../types';
-import { AccountInactiveError, InsufficientFundsError, InvalidAmountError, NotFoundError } from '../errors';
+import { AccountInactiveError, InsufficientFundsError, InvalidAmountError, NotFoundError, WithdrawalCodeRejectedError } from '../errors';
 import {
   LedgerPolicy,
   LockedAccount,
@@ -423,8 +423,20 @@ export class TellerService {
     return { authorizationCode: code, accountId, amountInPaise: amount.toString(), expiresAt };
   }
 
-  /** Validates and consumes the customer's code inside the teller's transaction */
-  private async consumeWithdrawalCode(tx: TxClient, accountId: string, amount: bigint, code: string | undefined, cashOperationId: string) {
+  /**
+   * Validates and consumes the customer's code inside the teller's transaction. A wrong code (or amount)
+   * only throws: the money transaction fails first and the failure is counted afterwards, in its own short
+   * transaction (recordingCodeFailures), so one request never holds a second pooled connection (plus the
+   * teller's advisory lock) while it waits for another.
+   */
+  private async consumeWithdrawalCode(
+    tx: TxClient,
+    accountId: string,
+    amount: bigint,
+    code: string | undefined,
+    cashOperationId: string,
+    tellerId: string
+  ) {
     const invalid = () => new HttpError(403, 'WITHDRAWAL_NOT_AUTHORISED', 'A valid customer withdrawal code for this account and amount is required');
     if (!code || !/^\d{8}$/.test(code)) throw invalid();
     const auth = await tx.withdrawalAuthorization.findFirst({
@@ -434,16 +446,7 @@ export class TellerService {
     if (!auth) throw invalid();
     const presented = Buffer.from(hashCode(auth.id, code));
     if (auth.amount !== amount || !crypto.timingSafeEqual(presented, Buffer.from(auth.codeHash))) {
-      // Count failures per account (append-only audit) and burn the code after too many wrong guesses
-      await audit(this.prisma, 'system', 'WITHDRAWAL_CODE_FAILED', accountId);
-      const failures = await this.prisma.auditLog.count({
-        where: { action: 'WITHDRAWAL_CODE_FAILED', targetId: accountId, createdAt: { gte: auth.createdAt } },
-      });
-      if (failures >= CODE_ATTEMPTS_BEFORE_LOCK) {
-        await this.prisma.withdrawalAuthorization.updateMany({ where: { accountId, usedAt: null }, data: { usedAt: new Date() } });
-        logger.warn({ accountId, alert: 'WITHDRAWAL_CODE_BRUTE_FORCE' }, 'Withdrawal codes invalidated after repeated wrong attempts');
-      }
-      throw invalid();
+      throw new WithdrawalCodeRejectedError(accountId, auth.createdAt, tellerId);
     }
     const claimed = await tx.withdrawalAuthorization.updateMany({
       where: { id: auth.id, usedAt: null },
@@ -452,14 +455,50 @@ export class TellerService {
     if (claimed.count !== 1) throw invalid();
   }
 
+  /**
+   * Runs a money transaction; if it refused a wrong withdrawal code, records that failure once the
+   * transaction has rolled back. Callers that pass their own transaction to requestCashOperation (the
+   * idempotent HTTP path) wrap the whole transaction in this.
+   */
+  public async recordingCodeFailures<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (err) {
+      if (err instanceof WithdrawalCodeRejectedError) await this.recordWithdrawalCodeFailure(err);
+      throw err;
+    }
+  }
+
+  /** Counts failures per account (append-only audit) and burns the codes after too many wrong guesses */
+  private async recordWithdrawalCodeFailure(failure: WithdrawalCodeRejectedError): Promise<void> {
+    const { accountId } = failure;
+    await this.prisma.$transaction(async (tx) => {
+      // Serialised per account, so concurrent wrong guesses can't all count below the threshold
+      await advisoryLock(tx, `withdrawal-code:${accountId}`);
+      await audit(tx, failure.tellerId, 'WITHDRAWAL_CODE_FAILED', accountId);
+      // Served by audit_log(action, target_id, created_at)
+      const failures = await tx.auditLog.count({
+        where: { action: 'WITHDRAWAL_CODE_FAILED', targetId: accountId, createdAt: { gte: failure.authorizationCreatedAt } },
+      });
+      if (failures >= CODE_ATTEMPTS_BEFORE_LOCK) {
+        await tx.withdrawalAuthorization.updateMany({ where: { accountId, usedAt: null }, data: { usedAt: new Date() } });
+        logger.warn({ accountId, alert: 'WITHDRAWAL_CODE_BRUTE_FORCE' }, 'Withdrawal codes invalidated after repeated wrong attempts');
+      }
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Cash operations (maker-checker)
   // ---------------------------------------------------------------------------
 
+  /**
+   * With `txClient`, runs inside the caller's transaction, and the caller wraps that transaction in
+   * recordingCodeFailures; without it, this runs (and records code failures) on its own.
+   */
   public async requestCashOperation(dto: CashOperationDTO, teller: AuthenticatedUser, txClient?: TxClient): Promise<CashOperationResult> {
     if (dto.amountInPaise <= 0n) throw new InvalidAmountError();
 
-    return this.inTransaction(txClient, async (tx) => {
+    const work = async (tx: TxClient): Promise<CashOperationResult> => {
       const account = await tx.ledgerAccount.findUnique({ where: { id: dto.accountId } });
       if (!account || account.kind !== 'CUSTOMER') throw new NotFoundError('Account not found');
       if (account.customerId === teller.id) {
@@ -472,7 +511,7 @@ export class TellerService {
 
       const operationId = crypto.randomUUID();
       if (dto.type === 'WITHDRAWAL') {
-        await this.consumeWithdrawalCode(tx, dto.accountId, dto.amountInPaise, dto.authorizationCode, operationId);
+        await this.consumeWithdrawalCode(tx, dto.accountId, dto.amountInPaise, dto.authorizationCode, operationId, teller.id);
       }
 
       const executedToday = await tx.cashOperation.aggregate({
@@ -509,7 +548,8 @@ export class TellerService {
         transactionId: transaction.transactionId,
       });
       return { status: 'EXECUTED', cashOperationId: operation.id, transaction };
-    });
+    };
+    return txClient ? work(txClient) : this.recordingCodeFailures(() => this.inTransaction(undefined, work));
   }
 
   public async approveCashOperation(cashOperationId: string, approver: AuthenticatedUser, txClient?: TxClient): Promise<CashOperationResult> {
