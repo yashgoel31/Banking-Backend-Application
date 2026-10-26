@@ -1,0 +1,18 @@
+
+Running 13 tests using 1 worker
+
+  ok  1 [journeys] › e2e\journeys\bank-day.spec.ts:54:1 › administrators sign in with their authenticator codes (4.6s)
+  ok  2 [journeys] › e2e\journeys\bank-day.spec.ts:73:1 › four-eyes staff onboarding: request, second approval, self-activation, authenticator (12.8s)
+  ok  3 [journeys] › e2e\journeys\bank-day.spec.ts:122:1 › a customer signs up, verifies their email and completes their profile (3.4s)
+  ok  4 [journeys] › e2e\journeys\bank-day.spec.ts:149:1 › a KYC officer finds the customer in the queue and verifies their identity (1.6s)
+  ok  5 [journeys] › e2e\journeys\bank-day.spec.ts:163:1 › the verified customer opens a savings and a current account (1.6s)
+  ok  6 [journeys] › e2e\journeys\bank-day.spec.ts:182:1 › a supervisor issues a float; the teller counts it blind and takes a deposit (2.2s)
+  ok  7 [journeys] › e2e\journeys\bank-day.spec.ts:210:1 › the customer sees the money and moves some between their own accounts (1.6s)
+  ok  8 [journeys] › e2e\journeys\bank-day.spec.ts:230:1 › payees: an unusable account number gets the same answer as an unknown one (1.7s)
+  ok  9 [journeys] › e2e\journeys\bank-day.spec.ts:244:1 › cash withdrawal with a one-time code from the customer (1.3s)
+  ok 10 [journeys] › e2e\journeys\bank-day.spec.ts:267:1 › a large deposit needs a supervisor, and the fraud analyst triages the alert it raises (3.0s)
+  ok 11 [journeys] › e2e\journeys\bank-day.spec.ts:298:1 › blind close-out: the teller declares, the supervisor counts independently and signs off (2.5s)
+  ok 12 [journeys] › e2e\journeys\bank-day.spec.ts:324:1 › security: a mistyped password keeps the session; authenticator setup; reload restores the session (11.2s)
+  ok 13 [journeys] › e2e\journeys\bank-day.spec.ts:351:1 › documentation screenshots: dashboards, statements, staff consoles, dark mode and mobile (7.7s)
+
+  13 passed (58.1s)
