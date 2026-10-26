@@ -592,20 +592,21 @@ export class AuthService {
     const user = await this.requireActiveUser(actor.id);
     if (user.mfaEnabled) throw new ConflictError('MFA is already enabled for this account');
     if (!user.mfaPendingSecretEnc) throw new HttpError(400, 'MFA_SETUP_REQUIRED', 'Start MFA setup first');
-    if (!actor.sessionId) throw new UnauthorizedError();
+    const sessionId = actor.sessionId;
+    if (!sessionId) throw new UnauthorizedError();
 
     const secret = decryptSecret(user.mfaPendingSecretEnc, user.id);
     const step = verifyTotp(secret, code);
     if (step === null) throw new HttpError(400, 'INVALID_MFA_CODE', 'The verification code is not valid');
 
-    const { updated, familyExpiresAt } = await this.prisma.$transaction(async (tx) => {
+    const { updated, tokens } = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${user.id} FOR UPDATE`;
       if (isStaffRole(user.role)) {
         if (!enrolmentToken) throw new HttpError(403, 'ENROLMENT_TOKEN_REQUIRED', 'Staff MFA enrolment requires a valid one-time enrolment token');
         await this.consumeEnrolmentToken(tx, enrolmentToken, EnrolmentPurpose.MFA_ENROL, user.id);
       }
       const current = await tx.refreshToken.findFirst({
-        where: { userId: user.id, familyId: actor.sessionId, isRevoked: false },
+        where: { userId: user.id, familyId: sessionId, isRevoked: false },
       });
       if (!current) throw new UnauthorizedError('Your session is no longer valid');
       const result = await tx.user.update({
@@ -620,24 +621,26 @@ export class AuthService {
         },
       });
       // Every session, including the current refresh token, is revoked; the current session continues
-      // only through the new tokens issued below in the same family
+      // only through the new tokens issued here in the same family. Issued inside the transaction (under
+      // the user row lock) so a password reset landing right after commit revokes them as well.
       await tx.refreshToken.updateMany({ where: { userId: user.id, isRevoked: false }, data: { isRevoked: true } });
       await this.audit(tx, user.id, 'MFA_ENABLED', user.id);
-      return { updated: result, familyExpiresAt: current.familyExpiresAt };
+      // The code just verified is a fresh TOTP check; the factor-age rule still keeps a brand-new factor
+      // from authorising high-risk actions in production
+      const issued = await this.createTokensInFamily(
+        tx,
+        result,
+        { familyId: sessionId, familyExpiresAt: current.familyExpiresAt, mfaAuthenticated: true },
+        true
+      );
+      return { updated: result, tokens: issued };
     });
 
     await this.publishTokenVersion(updated.id, updated.tokenVersion);
     this.runInBackground('send MFA changed email', () =>
       this.mailer.send(mfaChangedEmail(updated.email, true)).then(() => {})
     );
-    // The code just verified is a fresh TOTP check; the factor-age rule still keeps a brand-new factor
-    // from authorising high-risk actions in production
-    return this.createTokensInFamily(
-      this.prisma,
-      updated,
-      { familyId: actor.sessionId, familyExpiresAt, mfaAuthenticated: true },
-      true
-    );
+    return tokens;
   }
 
   /**
