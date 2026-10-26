@@ -227,6 +227,22 @@ export async function stageTransactionEvent(tx: TxClient, transactionId: string,
   });
 }
 
+/**
+ * A refusal that must leave a durable trace (an audit row, a recorded dispute). Thrown inside a
+ * transaction, those writes would roll back with it; returned instead, the transaction commits them and
+ * `commitThenRefuse` throws the error once the commit is done. Only for transactions that have written
+ * nothing else by the time they refuse.
+ */
+export class Refusal {
+  constructor(readonly error: Error) {}
+}
+
+export async function commitThenRefuse<T>(transaction: Promise<T | Refusal>): Promise<T> {
+  const result = await transaction;
+  if (result instanceof Refusal) throw result.error;
+  return result;
+}
+
 export async function audit(
   tx: TxClient | { auditLog: TxClient['auditLog'] },
   actorId: string,
