@@ -143,6 +143,7 @@ Production properties of the compose stack:
 | `APP_BASE_URL` | auth | Frontend base URL for email links. |
 | `STAFF_EMAIL_DOMAIN`, `STAFF_ENROLMENT_TTL_HOURS` (24), `ADMIN_REQUEST_TTL_HOURS` (24) | auth | Staff onboarding. |
 | `STAFF_ALLOWED_CIDRS` | all | Networks staff may work from: every service refuses staff tokens from elsewhere (by role, on every route), auth refuses staff sign-in after the password check, and the gateway also blocks staff-only paths. Empty = unrestricted; required in production. |
+| `AUTH_COOKIE_SECURE` (true) | auth | `false` drops `Secure` from the `bs_rt` session cookie (browsers already accept Secure cookies on http://localhost). |
 | `PASSWORD_RESET_TTL_MINUTES` (30), `EMAIL_VERIFICATION_TTL_HOURS` (24), `SESSION_MAX_DAYS` (30) | auth | Token lifetimes. |
 | `LOGIN_MAX_FAILURES` (5), `LOGIN_LOCKOUT_SECONDS` (900), `MFA_MAX_FAILURES_PER_HOUR` (10), `AUTH_EMAILS_PER_HOUR` (3) | auth | Brute-force / mail-bombing controls. |
 | `AUTH_RATE_LIMIT_MAX` (30), `AUTH_RECOVERY_RATE_LIMIT_MAX` (10), `GATEWAY_RATE_LIMIT_PER_MINUTE` (300) | auth, gateway | Per-IP limits. |
@@ -167,6 +168,7 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 | `POST /api/v1/auth/email/verify` `{token}` · `POST /api/v1/auth/email/resend-verification` `{email}` | public |
 | `POST /api/v1/auth/login` → tokens, or `{mfaRequired, challengeToken}` · `POST /api/v1/auth/login/mfa` `{challengeToken, code}` | public |
 | `POST /api/v1/auth/refresh` (409 `REFRESH_IN_PROGRESS` if another tab just refreshed) · `POST /api/v1/auth/logout` | public |
+| Browsers: send `X-Session-Transport: cookie` and every token-issuing response (login, login/mfa, refresh, mfa/enable, password/change, staff/activate) sets the refresh token as the `bs_rt` cookie (HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth, Max-Age = the refresh token's remaining lifetime) instead of returning it; refresh/logout then read it from the cookie (no session anywhere: 401), and logout or a dead session clears it | public |
 | `POST /api/v1/auth/password/forgot` `{email}` → always 202 · `POST /api/v1/auth/password/reset` `{token, newPassword}` | public |
 | `POST /api/v1/auth/password/change` · `GET /api/v1/auth/me` | any user |
 | `POST /api/v1/auth/mfa/setup` `{password, enrolmentToken?}` · `/mfa/enable` `{code, enrolmentToken?}` · `/mfa/disable` | any user (staff need the enrolment token; staff can't disable) |
