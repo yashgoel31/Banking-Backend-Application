@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import { PrismaClient } from '../generated/client';
 import Redis from 'ioredis';
 import {
+  assertNoPlaceholders,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -99,6 +100,7 @@ export function createApp(prisma: PrismaClient, redis: Redis, tokenState: TokenS
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['DATABASE_URL', 'REDIS_URL', 'JWT_VERIFY_KEYS', 'CUSTOMER_INTERNAL_TOKEN']);
   const prisma = new PrismaClient(prismaClientOptions());
   const redis = await connectRedis();
   const { app } = createApp(prisma, redis, new RedisTokenStateStore(redis));

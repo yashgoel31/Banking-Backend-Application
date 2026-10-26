@@ -21,8 +21,8 @@ A double-entry banking backend in TypeScript / Express / Prisma / PostgreSQL, wi
 | **customer-service** | `customer_schema` | Customer profile (Redis cache-aside), KYC review by KYC officers (versioned), staff access log. |
 | **account-service** | `account_schema` | KYC-gated account opening, Luhn-checked 12-digit numbers, freeze/close, daily limits; versioned sync of account controls to the ledger. |
 | **transaction-service** | `ledger_schema` | Double-entry ledger: transfers, beneficiaries, branch cash (vault, teller drawers, suspense) with dual-control floats and blind counts, customer withdrawal codes, maker-checker, idempotency, limits, reconciliation. |
-| **notification-service** | `notification_schema` | Kafka consumer; emails the real account holder over SMTP; retries, delayed-retry topic, DLQ. |
-| **fraud-service** | `fraud_schema` | Amount, velocity and cash-structuring rules; alerts with four-eyes closure for fraud analysts. |
+| **notification-service** | `notification_schema` | Kafka consumer; emails the real account holder over SMTP (transactions, account changes, withdrawal codes, new payees); retries, its own delayed-retry topics, DLQ. |
+| **fraud-service** | `fraud_schema` | Amount, velocity (one open alert per account) and cash-structuring rules (per initiator and per account); alerts with four-eyes closure for fraud analysts. |
 
 All money is integer **paise** (`"100000"` = ₹1,000.00) sent as strings.
 
@@ -94,7 +94,8 @@ single-analyst alert closure and internal-API access. It fails if any request re
 
 ## Production deployment
 
-1. `cp .env.example .env` and replace **every** `CHANGE_ME`. Generate secrets with
+1. `cp .env.example .env` and replace **every** `CHANGE_ME` (anything still containing it is refused: the
+   services won't start in production and the Postgres/Redis/Kafka bootstrap won't use it). Generate secrets with
    `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` (hex is URL-safe in URLs), and the
    ES256 key pair as described in `.env.example`.
 2. Point `SMTP_*` / `MAIL_FROM` at your mail provider (SES, SendGrid, Postmark, ...). TLS is required by default.
@@ -108,6 +109,12 @@ single-analyst alert closure and internal-API access. It fails if any request re
    another, and activates their own account from the emailed link (choosing their own password, then MFA).
 6. Terminate TLS in front of the gateway.
 
+**Upgrading a stack that used the shared `<topic>.retry` topics:** each consumer now parks retries on its own
+`<service>.<topic>.retry` topics (`fraud.…`, `notification.…`) and nothing reads the old shared ones any more
+(kafka-init revokes the services' ACLs on them). Before upgrading, check that `fraud-service-group.retry` and
+`notification-service-group.retry` have no lag on the old `<topic>.retry` topics; otherwise re-publish the
+`payload` of the parked envelopes to their original topic (consumers are idempotent).
+
 Production properties of the compose stack:
 - Networks: `edge` (gateway only), `apps` and `backend` (internal, no internet), `egress` (only auth and
   notification, for SMTP). Only the gateway publishes a port.
@@ -120,8 +127,11 @@ Production properties of the compose stack:
   have read-only access to it. AOF persistence and `noeviction`, so revocation state is never dropped.
   Rate-limit counters live in a separate, evictable Redis.
 - Kafka: KRaft, SASL/SCRAM-SHA-512, one user per service with least-privilege ACLs (a service can only
-  produce the events it owns); `<topic>.retry` and `<topic>.dlq` topics; auto-creation off.
-- A one-shot `migrate` job applies migrations before services start; services wait for healthy dependencies.
+  produce the events it owns); per-consumer `<service>.<topic>.retry` topics that only that service can write
+  and read; `<topic>.dlq` topics; auto-creation off.
+- A one-shot `migrate` job applies migrations (with retries) before services start; services wait for healthy
+  dependencies. The gateway only needs the asynchronous notification and fraud services to be started, so an
+  SMTP or consumer problem never takes the public API down.
   Migrations are written for live databases: large indexes are built `CONCURRENTLY`, CHECK constraints are
   added `NOT VALID` and validated separately, new columns are backfilled without table rewrites.
 - Periodic full-table jobs (reconciliations) run on one replica at a time via a lease in `job_leases`.
@@ -152,7 +162,9 @@ Production properties of the compose stack:
 | `CASH_SINGLE_APPROVAL_LIMIT_PAISE` (₹2,00,000), `TELLER_DAILY_LIMIT_PAISE` (₹10,00,000), `CASH_APPROVAL_TTL_HOURS` (24) | ledger | Maker-checker thresholds. |
 | `CUSTOMER_DAILY_OUTFLOW_LIMIT_PAISE` (₹5,00,000), `WITHDRAWAL_CODE_TTL_MINUTES` (15) | ledger | Outflow controls. |
 | `HIGH_AMOUNT_THRESHOLD_PAISE`, `VELOCITY_*`, `STRUCTURING_MAX_OPS` | fraud | Rule tuning. |
-| `KAFKA_TRANSIENT_BUDGET_MS` (15000), `KAFKA_PARTITIONS_CONCURRENCY` (3) | consumers | In-place retry budget before a message moves to `<topic>.retry`; parallel partitions. |
+| `VELOCITY_ALERT_DEDUPE_HOURS` (24) | fraud | While a velocity alert this young is open for an account, further velocity-only hits are recorded but raise no new alert. |
+| `KAFKA_TRANSIENT_BUDGET_MS` (15000), `KAFKA_PARTITIONS_CONCURRENCY` (3) | consumers | In-place retry budget before a message moves to the consumer's `<service>.<topic>.retry`; parallel partitions. |
+| `SMTP_CIRCUIT_OPEN_MS` (30000) | notification | After an SMTP infrastructure failure, no email is attempted for this long (then one probe). |
 | `RECONCILE_INTERVAL_MS` | account, ledger | Reconciliation interval (one replica at a time). |
 | `TRUST_PROXY` | all | Hop count of trusted proxies (`1` behind the gateway). |
 
@@ -228,7 +240,8 @@ Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAG
   counts are always audited. Every cash movement is therefore in the ledger
   and fake deposits surface as a shortage. Withdrawals need the customer's one-time code for the exact amount
   (emailed notice; brute force burns all codes); large or over-budget operations need a second person; a
-  cumulative structuring rule flags split cash operations.
+  cumulative structuring rule flags split cash operations, per teller and per account (splitting across tellers
+  doesn't hide them). Only fraud analysts triage alerts; administrators can read but not close them.
 - **Dual control on account and user status**: an account frozen by a staff member (or held by one after its
   owner froze it), or a user disabled by an administrator, can only be reinstated by a different administrator.
   A daily limit set by an administrator is a ceiling the owner can lower but not raise past.
@@ -252,8 +265,12 @@ Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAG
   reconciliation on one consistent snapshot (customer balances = cash accounts) that alerts on any mismatch.
 - **Reliable events**: transactional outbox with leases, fencing and per-aggregate ordering (an unavailable
   broker only delays events; only messages the broker can never accept are parked, with an alert and a re-drive);
-  consumers deduplicate, park transient failures on a delayed-retry topic served by a separate consumer group
-  (a circuit breaker stops a dead dependency from stalling fresh events), and dead-letter poison messages.
+  consumers deduplicate, park transient failures on their own delayed-retry topic served by a separate consumer
+  group (a circuit breaker stops a dead dependency from stalling fresh events; retry envelopes are validated and
+  never trusted for routing), and dead-letter poison messages. Infrastructure failures (database, SMTP
+  connection/DNS/TLS/auth) are always retried, never dead-lettered. Each email is claimed before it is sent, so
+  retries and redeliveries never send it twice; error text in logs, retry envelopes and DLQs has email
+  addresses redacted.
 - **Payee enumeration**: without a registered beneficiary every third-party account number gets the same answer.
 
 ## Known limitations

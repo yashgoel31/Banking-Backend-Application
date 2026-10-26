@@ -14,6 +14,17 @@ psql_admin() {
   psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" "$@"
 }
 
+# Refuse unreplaced .env.example placeholders (a CHANGE_ME password is a known password). Initialisation
+# stops here: fix .env, then remove the postgres_data volume and start again.
+refuse_placeholder() {
+  case "$2" in
+    *[Cc][Hh][Aa][Nn][Gg][Ee]_[Mm][Ee]*)
+      echo "$1 is still the CHANGE_ME placeholder from .env.example; refusing to initialise the database" >&2
+      exit 1 ;;
+  esac
+}
+refuse_placeholder POSTGRES_PASSWORD "${POSTGRES_PASSWORD:-}"
+
 # All timestamps are stored and compared in UTC; nobody may create objects in the public schema
 psql_admin \
   -c "ALTER DATABASE \"$POSTGRES_DB\" SET timezone TO 'UTC'" \
@@ -26,6 +37,8 @@ create_service_roles() {
     echo "Missing owner/app password for ${prefix}" >&2
     exit 1
   fi
+  refuse_placeholder "The ${prefix}_owner password" "$owner_password"
+  refuse_placeholder "The ${prefix}_app password" "$app_password"
   psql_admin -v schema="$schema" -v owner="${prefix}_owner" -v app="${prefix}_app" \
     -v owner_password="$owner_password" -v app_password="$app_password" <<'SQL'
 SELECT format('CREATE ROLE %I LOGIN', :'owner') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'owner') \gexec
