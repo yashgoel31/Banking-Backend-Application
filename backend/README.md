@@ -174,6 +174,7 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 | `POST /api/v1/auth/mfa/setup` `{password, enrolmentToken?}` · `/mfa/enable` `{code, enrolmentToken?}` · `/mfa/disable` | any user (staff need the enrolment token; staff can't disable) |
 | `POST /api/v1/auth/mfa/step-up` `{code}` → fresh access token valid for high-risk actions | MFA session |
 | `POST /api/v1/auth/staff/activate` `{token, password}` | new staff (from the activation email) |
+| `GET /api/v1/auth/admin/users?role&q&limit&offset` → user directory, newest first (`q`: email contains, or exact id; audited) | BANK_ADMIN, SUPPORT |
 | `POST /api/v1/auth/admin/users` `{email, role}` → 202 request | BANK_ADMIN |
 | `PATCH /api/v1/auth/admin/users/:id/status` | BANK_ADMIN (customers: immediate, re-enable by a different admin; staff: 202 request) |
 | `POST /api/v1/auth/admin/users/:id/mfa/reset` | BANK_ADMIN (always a 202 four-eyes request) |

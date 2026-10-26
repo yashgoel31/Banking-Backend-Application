@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import {
+  ROLES,
   UnauthorizedError,
   clientIpKey,
   getAuthenticatedUser,
@@ -8,6 +9,7 @@ import {
   readBearerToken,
   verifyAccessToken,
 } from '@banksphere/common';
+import { Role } from '../../generated/client';
 import { AuthService, LoginContext } from '../services/auth.service';
 import { AdminRequestService } from '../services/admin-requests.service';
 import { clearSessionCookie, issueTokens, readSessionCookie, wantsCookieTransport } from './session-transport';
@@ -52,6 +54,7 @@ const stepUpSchema = z.object({ code: totpCodeSchema }).strict();
 const activateSchema = z.object({ token: oneTimeTokenSchema, password: passwordSchema }).strict();
 const requestIdParams = z.object({ requestId: z.string().uuid() });
 const requestListQuery = z.object({ status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional() });
+const userListQuery = z.object({ role: z.enum(ROLES).optional(), q: z.string().trim().max(254).optional() });
 const mfaDisableSchema = z.object({ password: z.string().min(1).max(128), code: totpCodeSchema }).strict();
 
 const refreshSchema = z.object({
@@ -246,6 +249,14 @@ export class AuthController {
       const request = await this.adminRequests.request(actor, { type: 'RESET_MFA', userId });
       res.status(202).json({ success: true, data: { requestId: request.id, status: request.status } });
     }
+  });
+
+  /** Staff user directory (BANK_ADMIN, SUPPORT) */
+  public listUsers = wrap(async (req, res) => {
+    const { role, q } = userListQuery.parse(req.query);
+    const { limit, offset } = parsePagination(req.query);
+    const users = await this.authService.listUsers(getAuthenticatedUser(req), { role: role as Role | undefined, q, limit, offset });
+    res.json({ success: true, data: users, pagination: { limit, offset } });
   });
 
   public listAdminRequests = wrap(async (req, res) => {
