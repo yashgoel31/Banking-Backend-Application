@@ -88,6 +88,7 @@ model Transaction {
   @@index([sourceAccountId])
   @@index([destinationAccountId])
   @@index([createdAt])
+  @@index([initiatedBy, destinationAccountId, createdAt]) // new-beneficiary cap: what a customer sent to a payee lately
   @@map("transactions")
 }
 
