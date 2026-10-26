@@ -2,8 +2,10 @@ import { IRiskRule } from './risk-rule.interface';
 import { TransactionEvaluationContext, RiskRuleResult } from '../types';
 import { PrismaClient, RiskLevel } from '../../generated/client';
 
+export const VELOCITY_RULE_ID = 'RULE_VELOCITY_CHECK';
+
 export class VelocityRule implements IRiskRule {
-  readonly id = 'RULE_VELOCITY_CHECK';
+  readonly id = VELOCITY_RULE_ID;
   readonly name = 'Transaction Velocity Surge Rule';
 
   constructor(
@@ -15,11 +17,13 @@ export class VelocityRule implements IRiskRule {
   public async evaluate(context: TransactionEvaluationContext): Promise<RiskRuleResult> {
     const windowStart = new Date(context.timestamp.getTime() - this.windowSeconds * 1000);
 
-    // Count recent risk assessments for this account within the sliding time window
+    // Count risk assessments for this account in the window ENDING at this transaction: an event evaluated
+    // late (consumer lag, retry, replay) must not count transactions that happened after it.
+    // Served by risk_assessments(account_id, assessed_at).
     const recentCount = await this.prisma.riskAssessment.count({
       where: {
         accountId: context.accountId,
-        assessedAt: { gte: windowStart },
+        assessedAt: { gte: windowStart, lte: context.timestamp },
       },
     });
 
