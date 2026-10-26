@@ -9,11 +9,21 @@ import {
   WithdrawalCodeCreatedEvent,
   EmailDispatchOptions,
 } from '../types';
-import { MoneyUtil, TransientError, isTransientError, logger } from '@banksphere/common';
+import { MoneyUtil, TransientError, isTransientError, logger, redactEmails, redactErrorForLog } from '@banksphere/common';
 
 export interface KafkaDLQPublisher {
   publish(topic: string, key: string, payload: any): Promise<void>;
 }
+
+export interface NotificationServiceOptions {
+  securityTeamEmail?: string;
+  dlqTopic?: string;
+  /** After an SMTP infrastructure failure, no email is attempted for this long (then one probe) */
+  smtpCircuitOpenMs?: number;
+}
+
+/** Outcome of one email: sent now, already sent (or settled) earlier, or permanently rejected */
+export type DispatchOutcome = 'SENT' | 'ALREADY_SENT' | 'DEAD_LETTER';
 
 /**
  * Masks an account number for display in emails: 100112345678 -> XXXXXXXX5678
@@ -25,15 +35,62 @@ function maskAccountNumber(accountNumber: string): string {
 /** How long to keep retrying an event whose recipient's contact details haven't arrived yet */
 const CONTACT_WAIT_MS = 15 * 60 * 1000;
 
+/**
+ * Circuit breaker for the mail server. While it is open no SMTP connection is attempted at all (each attempt
+ * against a dead server costs its connection timeout); after the cool-down a single probe is let through.
+ */
+class SmtpCircuit {
+  private openUntil = 0;
+  private probing = false;
+
+  constructor(private readonly openMs: number) {}
+
+  /** True when this caller may talk to the mail server */
+  public tryAcquire(): boolean {
+    if (this.openUntil === 0) return true; // closed
+    if (Date.now() < this.openUntil || this.probing) return false;
+    this.probing = true; // half-open: exactly one probe
+    return true;
+  }
+
+  /** The server answered (accepted or rejected this message) */
+  public succeeded(): void {
+    this.openUntil = 0;
+    this.probing = false;
+  }
+
+  /** The mail infrastructure failed */
+  public failed(): void {
+    this.openUntil = Date.now() + this.openMs;
+    this.probing = false;
+  }
+
+  /** A probe ended without reaching the server (e.g. the database failed first) */
+  public release(): void {
+    this.probing = false;
+  }
+}
+
+function emailDomain(address: string): string | undefined {
+  const at = address.lastIndexOf('@');
+  return at >= 0 ? address.slice(at + 1).toLowerCase() : undefined;
+}
+
 export class NotificationService {
+  private readonly securityTeamEmail: string;
+  private readonly dlqTopic: string;
+  private readonly smtpCircuit: SmtpCircuit;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly emailProvider: EmailProvider,
     private readonly dlqPublisher?: KafkaDLQPublisher | null,
-    private readonly maxRetries = Number(process.env.MAX_NOTIFICATION_RETRIES || 3),
-    private readonly securityTeamEmail = process.env.SECURITY_ALERT_EMAIL || 'security-team@banksphere.com',
-    private readonly dlqTopic = process.env.KAFKA_DLQ_TOPIC || 'notifications.dlq'
-  ) {}
+    options: NotificationServiceOptions = {}
+  ) {
+    this.securityTeamEmail = options.securityTeamEmail ?? (process.env.SECURITY_ALERT_EMAIL || 'security-team@banksphere.com');
+    this.dlqTopic = options.dlqTopic ?? (process.env.KAFKA_DLQ_TOPIC || 'notifications.dlq');
+    this.smtpCircuit = new SmtpCircuit(options.smtpCircuitOpenMs ?? Number(process.env.SMTP_CIRCUIT_OPEN_MS || 30_000));
+  }
 
   /**
    * Evaluates if a Kafka event was already processed to guarantee consumer idempotency
@@ -116,18 +173,22 @@ export class NotificationService {
     }
 
     const formattedAmount = MoneyUtil.formatINR(event.amountInPaise);
-    const parties: Array<{ email: string | null; direction: 'debited from' | 'credited to' }> = [];
+    // `side` is part of the delivery key: on a transfer between a customer's own accounts the same address
+    // gets both the debit and the credit notice
+    const parties: Array<{ email: string | null; direction: 'debited from' | 'credited to'; side: 'debit' | 'credit' }> = [];
 
     if (event.sourceAccountId) {
       parties.push({
         email: await this.resolveAccountOwnerEmail(event.sourceAccountId, event.sourceCustomerId),
         direction: 'debited from',
+        side: 'debit',
       });
     }
     if (event.destinationAccountId) {
       parties.push({
         email: await this.resolveAccountOwnerEmail(event.destinationAccountId, event.destinationCustomerId),
         direction: 'credited to',
+        side: 'credit',
       });
     }
 
@@ -136,12 +197,17 @@ export class NotificationService {
         this.contactMissing(event.eventId, event.timestamp);
         continue;
       }
-      await this.dispatchWithRetryAndDLQ(event.eventId, event.eventType, {
-        recipient: party.email,
-        subject: `BankSphere Alert: ${formattedAmount} ${party.direction} your account`,
-        body: `Dear Customer,\n\n${formattedAmount} has been ${party.direction} your account (${event.type}).\n\nTransaction Reference: ${event.referenceId}\nTimestamp: ${event.timestamp}\n\nIf you did not authorise this transaction, contact BankSphere immediately.\n\nThank you for banking with BankSphere.`,
-        metadata: { transactionId: event.transactionId, referenceId: event.referenceId },
-      });
+      await this.dispatchEmail(
+        event.eventId,
+        event.eventType,
+        {
+          recipient: party.email,
+          subject: `BankSphere Alert: ${formattedAmount} ${party.direction} your account`,
+          body: `Dear Customer,\n\n${formattedAmount} has been ${party.direction} your account (${event.type}).\n\nTransaction Reference: ${event.referenceId}\nTimestamp: ${event.timestamp}\n\nIf you did not authorise this transaction, contact BankSphere immediately.\n\nThank you for banking with BankSphere.`,
+          metadata: { transactionId: event.transactionId, referenceId: event.referenceId },
+        },
+        party.side
+      );
     }
 
     await this.markEventProcessed(event.eventId, event.eventType);
@@ -165,7 +231,7 @@ export class NotificationService {
 
     const recipient = await this.resolveEmail(event.customerId);
     if (recipient) {
-      await this.dispatchWithRetryAndDLQ(event.eventId, event.eventType, {
+      await this.dispatchEmail(event.eventId, event.eventType, {
         recipient,
         subject: 'Welcome to BankSphere! Your New Account Details',
         body: `Dear Customer,\n\nYour new ${event.accountType} account has been successfully opened!\n\nAccount Number: ${maskAccountNumber(event.accountNumber)}\nCurrency: ${event.currency}\n\nThank you for choosing BankSphere.`,
@@ -189,7 +255,7 @@ export class NotificationService {
 
     const recipient = await this.resolveEmail(event.customerId);
     if (recipient) {
-      await this.dispatchWithRetryAndDLQ(event.eventId, event.eventType, {
+      await this.dispatchEmail(event.eventId, event.eventType, {
         recipient,
         subject: `BankSphere: your account is now ${event.status}`,
         body: `Dear Customer,\n\nThe status of one of your accounts changed from ${event.previousStatus} to ${event.status}.\n\nIf you did not request this change, contact BankSphere immediately.`,
@@ -210,7 +276,7 @@ export class NotificationService {
     }
     const recipient = await this.resolveEmail(event.customerId);
     if (recipient) {
-      await this.dispatchWithRetryAndDLQ(event.eventId, event.eventType, {
+      await this.dispatchEmail(event.eventId, event.eventType, {
         recipient,
         subject: 'BankSphere: a cash withdrawal code was created',
         body: `Dear Customer,\n\nA one-time code to withdraw ${MoneyUtil.formatINR(event.amountInPaise)} in cash at a branch was created from your online banking session. It expires at ${event.expiresAt}.\n\nIf this was not you, contact BankSphere immediately and change your password.`,
@@ -239,84 +305,114 @@ export class NotificationService {
       metadata: { alertId: event.alertId, transactionId: event.transactionId },
     };
 
-    await this.dispatchWithRetryAndDLQ(event.eventId, event.eventType, emailOptions);
+    await this.dispatchEmail(event.eventId, event.eventType, emailOptions);
     await this.markEventProcessed(event.eventId, event.eventType);
     return true;
   }
 
   /**
-   * Sends one email for (event, recipient) at most once across retries and redeliveries, with bounded
-   * in-process retries. Outcomes:
-   * - sent                         -> SENT log + delivery record
-   * - transient failure (SMTP down / 4xx / network) -> TransientError: the Kafka message is retried later
-   * - permanent failure (e.g. 5xx rejected recipient) -> DEAD_LETTER log + notifications.dlq
+   * Sends one email for (event, recipient[, purpose]) at most once across retries, redeliveries and
+   * concurrent consumers. One SMTP attempt per Kafka try: the consumer's in-place retries and delayed-retry
+   * topic do the retrying (with heartbeats), so a slow or dead mail server can't hold a partition.
+   * - the delivery is CLAIMED (unique row) before sending, so a redelivered message never sends it again
+   * - sent -> SENT log
+   * - mail infrastructure failure (down, DNS/TLS/auth/protocol, 4xx) -> claim released and TransientError:
+   *   the Kafka message is retried later and the event is NOT marked processed. While the SMTP circuit is
+   *   open nothing is attempted at all.
+   * - permanent rejection of this message (bad recipient, 5xx on RCPT/DATA) -> DEAD_LETTER log + notifications.dlq
+   * `purpose` tells several emails of one event to the same address apart (e.g. the debit and credit notices).
    */
-  public async dispatchWithRetryAndDLQ(
+  public async dispatchEmail(
     eventId: string,
     eventType: string,
-    options: EmailDispatchOptions
-  ): Promise<void> {
-    const delivered = await this.prisma.notificationDelivery.findUnique({
-      where: { eventId_recipient: { eventId, recipient: options.recipient } },
-    });
-    if (delivered) {
-      logger.info({ eventId }, 'Notification already delivered to this recipient; not resending');
-      return;
+    options: EmailDispatchOptions,
+    purpose?: string
+  ): Promise<DispatchOutcome> {
+    const deliveryKey = purpose ? `${eventId}:${purpose}` : eventId;
+    if (!this.smtpCircuit.tryAcquire()) {
+      // The mail server is known to be down: don't spend a connection timeout on every message
+      throw new TransientError('SMTP circuit open: email not attempted');
     }
 
-    let attempt = 0;
-    let lastError: any;
+    try {
+      try {
+        await this.prisma.notificationDelivery.create({ data: { eventId: deliveryKey, recipient: options.recipient } });
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err;
+        logger.info({ eventId, eventType, purpose }, 'Notification already sent (or settled) for this recipient; not resending');
+        return 'ALREADY_SENT';
+      }
 
-    while (attempt < this.maxRetries) {
-      attempt++;
       try {
         await this.emailProvider.sendEmail(options);
-        await this.prisma.$transaction([
-          this.prisma.notificationDelivery.create({ data: { eventId, recipient: options.recipient } }),
-          this.prisma.notificationLog.create({
-            data: {
-              recipient: options.recipient,
-              channel: NotificationChannel.EMAIL,
-              subject: options.subject,
-              body: options.body,
-              status: NotificationStatus.SENT,
-              retryCount: attempt - 1,
-              metadata: options.metadata,
-            },
-          }),
-        ]);
-        return;
       } catch (err: any) {
-        if (err?.code === 'P2002') return; // a concurrent consumer recorded the same delivery
-        lastError = err;
-        logger.warn(
-          { eventId, attempt, maxRetries: this.maxRetries, transient: isTransientError(err) },
-          `Notification attempt failed: ${err?.message || 'Email delivery failure'}`
-        );
-        if (attempt < this.maxRetries) {
-          const backoffMs = 100 * Math.pow(2, attempt);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        if (isTransientError(err)) {
+          this.smtpCircuit.failed();
+          await this.releaseClaim(eventId, deliveryKey, options.recipient);
+          logger.warn({ eventId, eventType, err: redactErrorForLog(err) }, 'Email not sent: mail infrastructure unavailable; will retry');
+          // The mail server (not the message) is the problem: let Kafka retry later, never dead-letter
+          throw new TransientError(`Email provider unavailable: ${redactEmails(String(err?.message ?? err))}`);
         }
+        this.smtpCircuit.succeeded(); // the server is up: it rejected this particular message
+        await this.deadLetter(eventId, eventType, options, err);
+        return 'DEAD_LETTER';
       }
+
+      this.smtpCircuit.succeeded();
+      try {
+        await this.prisma.notificationLog.create({
+          data: {
+            recipient: options.recipient,
+            channel: NotificationChannel.EMAIL,
+            subject: options.subject,
+            body: options.body,
+            status: NotificationStatus.SENT,
+            retryCount: 0,
+            metadata: options.metadata,
+          },
+        });
+      } catch (err) {
+        // The email went out and its delivery is claimed: a missing audit row must never trigger a resend
+        logger.error(
+          { eventId, eventType, err: redactErrorForLog(err), alert: 'NOTIFICATION_LOG_WRITE_FAILED' },
+          'Email sent but its audit log row could not be written'
+        );
+      }
+      return 'SENT';
+    } finally {
+      this.smtpCircuit.release();
     }
+  }
 
-    if (isTransientError(lastError)) {
-      // The mail server (not the message) is the problem: let Kafka redeliver later, never dead-letter
-      throw new TransientError(`Email provider unavailable: ${lastError?.message}`);
+  /** Frees a delivery claim after a transient failure so a later try can send the email */
+  private async releaseClaim(eventId: string, deliveryKey: string, recipient: string): Promise<void> {
+    try {
+      await this.prisma.notificationDelivery.deleteMany({ where: { eventId: deliveryKey, recipient } });
+    } catch (err) {
+      logger.error(
+        { eventId, deliveryKey, err: redactErrorForLog(err), alert: 'NOTIFICATION_CLAIM_STUCK' },
+        'Could not release a delivery claim; the email is not retried until its notification_deliveries row is removed'
+      );
     }
+  }
 
-    const lastErrorMsg = lastError?.message || 'Email delivery failure';
-    logger.error({ eventId }, 'Permanent notification failure. Routing to Dead-Letter Queue.');
+  /**
+   * Records a permanently rejected email. The recipient stays in notification_logs (the staff-only audit
+   * table); error text and the notifications.dlq payload carry no address: the DLQ references the log row.
+   */
+  private async deadLetter(eventId: string, eventType: string, options: EmailDispatchOptions, err: unknown): Promise<void> {
+    const reason = redactEmails(String((err as any)?.message || 'Email delivery failure')).slice(0, 1000);
+    logger.error({ eventId, eventType, err: redactErrorForLog(err) }, 'Permanent notification failure. Routing to Dead-Letter Queue.');
 
-    await this.prisma.notificationLog.create({
+    const log = await this.prisma.notificationLog.create({
       data: {
         recipient: options.recipient,
         channel: NotificationChannel.EMAIL,
         subject: options.subject,
         body: options.body,
         status: NotificationStatus.DEAD_LETTER,
-        retryCount: attempt,
-        lastError: lastErrorMsg,
+        retryCount: 0,
+        lastError: reason,
         metadata: options.metadata,
       },
     });
@@ -326,13 +422,14 @@ export class NotificationService {
         await this.dlqPublisher.publish(this.dlqTopic, eventId, {
           originalEventId: eventId,
           originalEventType: eventType,
-          failureReason: lastErrorMsg,
-          recipient: options.recipient,
+          notificationLogId: log?.id,
+          failureReason: reason,
+          recipientDomain: emailDomain(options.recipient),
           subject: options.subject,
           failedAt: new Date().toISOString(),
         });
       } catch (dlqErr) {
-        logger.error({ err: dlqErr, eventId }, 'Failed to publish message to DLQ topic');
+        logger.error({ err: redactErrorForLog(dlqErr), eventId }, 'Failed to publish message to DLQ topic');
       }
     }
   }
