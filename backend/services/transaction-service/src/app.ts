@@ -3,7 +3,6 @@ import { Request, Response } from 'express';
 import Redis from 'ioredis';
 import { PrismaClient } from '../generated/client';
 import {
-  acquireJobLease,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -124,14 +123,7 @@ async function main(): Promise<void> {
   // Ledger invariant: balances must equal the net of their entries (alerts on mismatch)
   const reconcileIntervalMs = Number(process.env.RECONCILE_INTERVAL_MS || 10 * 60 * 1000);
   // One replica at a time (lease): the full scan runs once per interval for the whole deployment
-  const reconcile = () =>
-    acquireJobLease(prisma, 'ledger-reconcile', Math.ceil((reconcileIntervalMs * 2) / 1000))
-      .then(async (leader) => {
-        if (!leader) return;
-        const r = await ledgerService.reconcileBalances();
-        logger.info({ checked: r.checked, mismatches: r.mismatches.length, zeroSumDelta: r.zeroSumDelta }, 'Ledger reconciliation done');
-      })
-      .catch((err) => logger.error({ err }, 'Ledger reconciliation failed'));
+  const reconcile = () => ledgerService.runScheduledReconciliation(Math.ceil((reconcileIntervalMs * 2) / 1000));
   void reconcile();
   const reconcileTimer = setInterval(reconcile, reconcileIntervalMs);
 
