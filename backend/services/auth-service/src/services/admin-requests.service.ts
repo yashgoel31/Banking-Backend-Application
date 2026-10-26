@@ -12,7 +12,7 @@ export type AdminRequestInput =
 /**
  * Four-eyes administration. Every privileged identity change (creating staff, enabling/disabling staff,
  * resetting staff MFA) is first recorded as a request by one BANK_ADMIN and executed only when a
- * DIFFERENT BANK_ADMIN approves it. Nobody can approve a request that concerns themselves, and the
+ * DIFFERENT BANK_ADMIN approves it. Nobody can approve or reject a request that concerns themselves, and the
  * admin who requested a staff account can never approve it, so a single insider can't mint a puppet.
  */
 export class AdminRequestService {
@@ -84,8 +84,10 @@ export class AdminRequestService {
         throw new ForbiddenError('You cannot approve a request that concerns your own account');
       }
       if (request.expiresAt < new Date()) {
+        // Returned rather than thrown: a throw here would roll the expiry back and leave the request PENDING forever
         await tx.adminRequest.update({ where: { id: request.id }, data: { status: AdminRequestStatus.REJECTED, decidedAt: new Date() } });
-        throw new ConflictError('This request has expired');
+        await this.auth.audit(tx, null, 'ADMIN_REQUEST_EXPIRED', request.id, { attemptedBy: approver.id });
+        return null;
       }
 
       const payload = request.payload as Record<string, any>;
@@ -119,18 +121,28 @@ export class AdminRequestService {
       return { request: updated, outcome };
     });
 
+    if (!result) throw new ConflictError('This request has expired');
     await afterCommit();
     return result;
   }
 
+  /**
+   * Any other administrator may reject a request, and the requester may withdraw their own; the target may
+   * not, or a staff member could block their own suspension or MFA reset.
+   */
   public async reject(actor: AuthenticatedUser, requestId: string) {
     return this.prisma.$transaction(async (tx) => {
+      const request = await tx.adminRequest.findUnique({ where: { id: requestId } });
+      if (!request) throw new NotFoundError('Admin request not found');
+      if (request.targetUserId === actor.id) {
+        throw new ForbiddenError('You cannot decide a request that concerns your own account');
+      }
       const result = await tx.adminRequest.updateMany({
         where: { id: requestId, status: AdminRequestStatus.PENDING },
         data: { status: AdminRequestStatus.REJECTED, decidedBy: actor.id, decidedAt: new Date() },
       });
       if (result.count !== 1) throw new ConflictError('Request is not pending');
-      await this.auth.audit(tx, actor.id, 'ADMIN_REQUEST_REJECTED', requestId);
+      await this.auth.audit(tx, actor.id, 'ADMIN_REQUEST_REJECTED', requestId, request.requestedBy === actor.id ? { withdrawn: true } : undefined);
       return { id: requestId, status: AdminRequestStatus.REJECTED };
     });
   }

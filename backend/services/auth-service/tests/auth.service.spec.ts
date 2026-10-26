@@ -8,6 +8,7 @@ import {
   RateLimitExceededError,
   ForbiddenError,
   HttpError,
+  NotFoundError,
   createAuthenticate,
   errorHandlerMiddleware,
   generateJwtKeyPair,
@@ -75,6 +76,7 @@ function buildMockPrisma() {
     },
     adminRequest: {
       create: jest.fn(({ data }: any) => ({ id: 'req-1', status: 'PENDING', ...data })),
+      findUnique: jest.fn(),
       findUniqueOrThrow: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(({ data }: any) => ({ id: 'req-1', ...data })),
@@ -610,6 +612,40 @@ describe('AuthService', () => {
         await expect(requests.approve(admin2, 'req-1')).rejects.toThrow('expired');
         prisma.adminRequest.findUniqueOrThrow.mockResolvedValue(pending({ status: 'APPROVED' }));
         await expect(requests.approve(admin2, 'req-1')).rejects.toThrow('already APPROVED');
+      });
+
+      it('EXPIRY: the expiry is committed (not rolled back with the refusal), so the request does not stay PENDING', async () => {
+        // A transaction that really rolls back: writes only land if the callback returns
+        const committed: any[] = [];
+        prisma.$transaction = jest.fn(async (fn: any) => {
+          const staged: any[] = [];
+          const stage = (args: any) => (staged.push(args), { id: 'req-1', ...args.data });
+          const tx = { ...prisma, adminRequest: { ...prisma.adminRequest, update: jest.fn(stage) }, auditLog: { create: jest.fn(stage) } };
+          const result = await fn(tx);
+          committed.push(...staged);
+          return result;
+        });
+        prisma.adminRequest.findUniqueOrThrow.mockResolvedValue(pending({ expiresAt: new Date(Date.now() - 1) }));
+        await expect(requests.approve(admin2, 'req-1')).rejects.toThrow('expired');
+        expect(committed).toContainEqual({ where: { id: 'req-1' }, data: expect.objectContaining({ status: 'REJECTED', decidedAt: expect.any(Date) }) });
+        expect(prisma.user.create).not.toHaveBeenCalled();
+      });
+
+      it('REJECT: the target of a request cannot reject it (e.g. block their own suspension); the requester can withdraw it', async () => {
+        const aboutAdmin2 = pending({ type: 'SET_USER_ACTIVE', targetUserId: 'admin-2', payload: { userId: 'admin-2', isActive: false } });
+        prisma.adminRequest.findUnique.mockResolvedValue(aboutAdmin2);
+        await expect(requests.reject(admin2, 'req-1')).rejects.toThrow(ForbiddenError);
+        expect(prisma.adminRequest.updateMany).not.toHaveBeenCalled();
+
+        await expect(requests.reject(admin, 'req-1')).resolves.toEqual({ id: 'req-1', status: 'REJECTED' });
+        expect(prisma.adminRequest.updateMany.mock.calls[0][0]).toEqual({
+          where: { id: 'req-1', status: 'PENDING' },
+          data: { status: 'REJECTED', decidedBy: 'admin-1', decidedAt: expect.any(Date) },
+        });
+        expect(prisma.auditLog.create.mock.calls.at(-1)[0].data).toEqual(expect.objectContaining({ action: 'ADMIN_REQUEST_REJECTED', details: { withdrawn: true } }));
+
+        prisma.adminRequest.findUnique.mockResolvedValue(null);
+        await expect(requests.reject(admin, 'missing')).rejects.toThrow(NotFoundError);
       });
     });
 
