@@ -1,7 +1,7 @@
 # BankSphere web app: static build served by an unprivileged nginx that also proxies /api to the gateway.
 #   docker build -t banksphere-web ./frontend
 
-FROM node:24-alpine AS build
+FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
 WORKDIR /app
 ENV CI=true
 COPY package.json package-lock.json ./
@@ -9,7 +9,7 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS runtime
 # Templates are rendered into conf.d at start-up (mounted as tmpfs when the filesystem is read-only)
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
