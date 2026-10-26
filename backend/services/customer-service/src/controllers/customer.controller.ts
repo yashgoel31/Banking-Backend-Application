@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { CustomerService } from '../services/customer.service';
-import { getAuthenticatedUser } from '@banksphere/common';
+import { getAuthenticatedUser, parsePagination } from '@banksphere/common';
 
 export const MIN_CUSTOMER_AGE = 18;
 export const MAX_CUSTOMER_AGE = 120;
@@ -86,6 +86,16 @@ const updateProfileSchema = z.object({
 
 const userIdParamsSchema = z.object({ userId: z.string().uuid() });
 
+const listQuerySchema = z.object({
+  kycStatus: z.enum(['PENDING', 'VERIFIED', 'REJECTED']).optional(),
+  q: z
+    .string()
+    .trim()
+    .max(100)
+    .transform((value) => value || undefined)
+    .optional(),
+});
+
 const kycSchema = z
   .object({ kycStatus: z.enum(['PENDING', 'VERIFIED', 'REJECTED']), expectedVersion: z.number().int().positive() })
   .strict();
@@ -148,6 +158,18 @@ export class CustomerController {
         success: true,
         data: updated,
       });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /** Staff search (see routes for roles); ?kycStatus=PENDING is the KYC review queue, oldest first */
+  public list = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { kycStatus, q } = listQuerySchema.parse(req.query);
+      const pagination = parsePagination(req.query);
+      const profiles = await this.customerService.listProfilesForStaff(getAuthenticatedUser(req), { kycStatus, q }, pagination);
+      res.status(200).json({ success: true, data: profiles, pagination });
     } catch (error) {
       next(error);
     }

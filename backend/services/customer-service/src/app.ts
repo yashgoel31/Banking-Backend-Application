@@ -44,6 +44,12 @@ export function createApp(prisma: PrismaClient, redis: Redis, tokenState: TokenS
     version: '1.0.0',
     description: 'Customer profile management with Redis Cache-Aside and cache invalidation',
     paths: {
+      '/api/v1/customers': {
+        get: {
+          summary:
+            'KYC_OFFICER/BANK_ADMIN/SUPPORT: search profiles (?kycStatus=&q=&limit=&offset=; PENDING oldest first); logged',
+        },
+      },
       '/api/v1/customers/me': {
         get: {
           summary: 'Retrieve authenticated customer profile',
@@ -59,7 +65,10 @@ export function createApp(prisma: PrismaClient, redis: Redis, tokenState: TokenS
         get: { summary: 'BANK_ADMIN/SUPPORT: look up a customer profile' },
       },
       '/api/v1/customers/{userId}/kyc': {
-        patch: { summary: 'BANK_ADMIN: set KYC status (PENDING, VERIFIED, REJECTED)' },
+        patch: { summary: 'KYC_OFFICER: decide KYC (PENDING, VERIFIED, REJECTED) on the reviewed profile version' },
+      },
+      '/api/v1/customers/{userId}/kyc/history': {
+        get: { summary: 'KYC_OFFICER/BANK_ADMIN/SUPPORT: KYC decisions and identity changes; logged' },
       },
     },
   });

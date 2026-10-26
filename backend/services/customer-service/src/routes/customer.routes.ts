@@ -14,7 +14,9 @@ export function createCustomerRouter(controller: CustomerController, authenticat
   router.post('/me', controller.createMe);
   router.patch('/me', controller.updateMe);
 
-  // Staff endpoints: profile lookup (logged) and KYC review (KYC officers only: separation of duties)
+  // Staff endpoints: profile search and lookup (logged) and KYC review (KYC officers only: separation of duties).
+  // '/' matches only the bare path, so it can't capture '/me' or '/:userId'.
+  router.get('/', requireRoles('KYC_OFFICER', 'BANK_ADMIN', 'SUPPORT'), controller.list);
   const staff = requireRoles('SUPPORT', 'TELLER', 'KYC_OFFICER', 'FRAUD_ANALYST', 'BANK_ADMIN');
   router.get('/:userId', staff, controller.getByUserId);
   router.patch('/:userId/kyc', requireRoles('KYC_OFFICER'), controller.updateKycStatus);
