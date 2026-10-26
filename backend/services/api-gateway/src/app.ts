@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import Redis from 'ioredis';
 import {
+  assertNoPlaceholders,
   connectRedis,
   correlationIdMiddleware,
   createRateLimiter,
@@ -168,6 +169,7 @@ export function createGateway(options: GatewayOptions = {}) {
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['REDIS_URL', 'RATE_LIMIT_REDIS_URL', 'TRUST_PROXY', 'STAFF_ALLOWED_CIDRS']);
   const redis = await connectRedis(process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_URL);
   if (process.env.NODE_ENV === 'production') {
     // Both are deployment facts the gateway can't guess; a wrong guess breaks per-IP limits and lockouts

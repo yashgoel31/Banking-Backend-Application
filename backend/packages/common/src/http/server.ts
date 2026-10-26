@@ -59,6 +59,20 @@ export function startHttpServer(
 }
 
 /**
+ * Refuses to start in production while any of the given variables (the secrets and required settings a
+ * service uses) still is, or contains, the CHANGE_ME placeholder from .env.example. docker compose's `:?`
+ * checks only reject EMPTY values, so a copied-but-unedited .env would otherwise run with known passwords.
+ * Unset variables are left to each service's own checks; values are never echoed.
+ */
+export function assertNoPlaceholders(names: string[], env: NodeJS.ProcessEnv = process.env): void {
+  if (env.NODE_ENV !== 'production') return;
+  const offending = names.filter((name) => /CHANGE_ME/i.test(env[name] ?? ''));
+  if (offending.length > 0) {
+    throw new Error(`Refusing to start: ${offending.join(', ')} still contain the CHANGE_ME placeholder from .env.example`);
+  }
+}
+
+/**
  * Redis client for request-path use: commands fail fast while disconnected instead of queueing,
  * so callers can fail closed (auth) or open (rate limiting) deliberately.
  */
