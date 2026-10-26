@@ -248,7 +248,12 @@ export class CustomerService {
     return profile;
   }
 
-  public async getKycHistory(userId: string) {
-    return this.prisma.kycEvent.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 100 });
+  /** Staff read of a customer's KYC trail (it carries identity data: names, dates of birth, addresses): recorded */
+  public async getKycHistory(actor: AuthenticatedUser, userId: string) {
+    const events = await this.prisma.kycEvent.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 100 });
+    await this.prisma.staffAccessLog.create({
+      data: { actorId: actor.id, actorRole: actor.role, userId, action: 'VIEW_KYC_HISTORY' },
+    });
+    return events;
   }
 }
