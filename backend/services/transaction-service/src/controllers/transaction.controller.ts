@@ -188,9 +188,14 @@ export class TransactionController {
     res.json({ success: true, data: await this.tellerService.acceptFloat(getAuthenticatedUser(req), BigInt(countedFloatPaise)) });
   });
 
+  /** Closes the session with a blind count, or (while CLOSED and not yet signed off) re-declares it */
   public closeSession = wrap(async (req, res) => {
     const { countedCashPaise } = countSchema.parse(req.body);
     res.json({ success: true, data: await this.tellerService.closeSession(getAuthenticatedUser(req), BigInt(countedCashPaise)) });
+  });
+
+  public currentSession = wrap(async (req, res) => {
+    res.json({ success: true, data: await this.tellerService.currentSession(getAuthenticatedUser(req)) });
   });
 
   // --- supervisor -----------------------------------------------------------
@@ -235,7 +240,8 @@ export class TransactionController {
   public listCashOperations = wrap(async (req, res) => {
     const { status } = cashListQuery.parse(req.query);
     const { limit, offset } = parsePagination(req.query);
-    res.json({ success: true, data: await this.tellerService.listCashOperations(status, limit, offset), pagination: { limit, offset } });
+    const data = await this.tellerService.listCashOperations(status, limit, offset, getAuthenticatedUser(req));
+    res.json({ success: true, data, pagination: { limit, offset } });
   });
 
   // --- reads ----------------------------------------------------------------
