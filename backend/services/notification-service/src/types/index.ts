@@ -42,6 +42,17 @@ export interface WithdrawalCodeCreatedEvent extends BaseEvent {
   expiresAt: string;
 }
 
+/** Produced by the ledger (transaction-service) when a customer registers a payee */
+export interface BeneficiaryAddedEvent extends BaseEvent {
+  eventType: 'beneficiary.added.v1';
+  customerId: string;
+  beneficiaryId: string;
+  accountNumberLast4: string;
+  nickname: string;
+  /** When transfers to the payee become possible (cooling-off), ISO-8601 */
+  activatesAt: string;
+}
+
 export interface UserRegisteredEvent extends BaseEvent {
   eventType: 'user.registered.v1';
   userId: string;

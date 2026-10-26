@@ -7,6 +7,7 @@ import {
   FraudAlertCreatedEvent,
   UserRegisteredEvent,
   WithdrawalCodeCreatedEvent,
+  BeneficiaryAddedEvent,
   EmailDispatchOptions,
 } from '../types';
 import { MoneyUtil, TransientError, isTransientError, logger, redactEmails, redactErrorForLog } from '@banksphere/common';
@@ -69,6 +70,24 @@ class SmtpCircuit {
   public release(): void {
     this.probing = false;
   }
+}
+
+/**
+ * A customer-chosen label made safe for an email: no control characters (no paragraph/header injection), no
+ * bidirectional overrides (no visual spoofing), bounded length. HTML escaping happens when it is rendered.
+ */
+function plainLabel(value: string, maxLength = 64): string {
+  const cleaned = value
+    .replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+  return cleaned || 'Unnamed payee';
+}
+
+/** "2026-10-27T14:05:09.000Z" -> "2026-10-27 14:05 UTC" */
+function formatUtc(date: Date): string {
+  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
 function emailDomain(address: string): string | undefined {
@@ -281,6 +300,41 @@ export class NotificationService {
         subject: 'BankSphere: a cash withdrawal code was created',
         body: `Dear Customer,\n\nA one-time code to withdraw ${MoneyUtil.formatINR(event.amountInPaise)} in cash at a branch was created from your online banking session. It expires at ${event.expiresAt}.\n\nIf this was not you, contact BankSphere immediately and change your password.`,
         metadata: { accountId: event.accountId },
+      });
+    } else {
+      this.contactMissing(event.eventId, event.timestamp);
+    }
+    await this.markEventProcessed(event.eventId, event.eventType);
+    return true;
+  }
+
+  /**
+   * A payee was added to the customer's online banking: a security notice, because adding a payee is the
+   * first step of an account takeover (the cooling-off period gives the customer time to react).
+   */
+  public async handleBeneficiaryAdded(event: BeneficiaryAddedEvent): Promise<boolean> {
+    const digits = typeof event.accountNumberLast4 === 'string' ? event.accountNumberLast4.replace(/\D/g, '') : '';
+    const activatesAt = new Date(typeof event.activatesAt === 'string' ? event.activatesAt : NaN);
+    if (typeof event.customerId !== 'string' || !event.customerId || digits.length < 4 || Number.isNaN(activatesAt.getTime())) {
+      throw new Error('Malformed beneficiary.added.v1 event'); // permanent: dead-lettered by the consumer
+    }
+    if (await this.isEventProcessed(event.eventId)) {
+      return false;
+    }
+
+    const recipient = await this.resolveEmail(event.customerId);
+    if (recipient) {
+      const addedAt = new Date(event.timestamp ?? Date.now()).getTime();
+      const activation =
+        activatesAt.getTime() <= (Number.isNaN(addedAt) ? Date.now() : addedAt) + 60_000
+          ? 'The payee is active immediately.'
+          : `Payments to this payee are possible from ${formatUtc(activatesAt)}.`;
+      const nickname = plainLabel(typeof event.nickname === 'string' ? event.nickname : '');
+      await this.dispatchEmail(event.eventId, event.eventType, {
+        recipient,
+        subject: 'BankSphere security notice: a new payee was added',
+        body: `Dear Customer,\n\nA new payee was added to your BankSphere online banking.\n\nPayee: ${nickname}\nAccount number: ••••${digits.slice(-4)}\n\n${activation}\n\nIf this wasn't you, freeze your account and contact the bank immediately.`,
+        metadata: { beneficiaryId: event.beneficiaryId },
       });
     } else {
       this.contactMissing(event.eventId, event.timestamp);
