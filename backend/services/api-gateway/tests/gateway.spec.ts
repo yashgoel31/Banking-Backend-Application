@@ -92,6 +92,15 @@ describe('API Gateway', () => {
     expect(denied.headers['access-control-allow-origin']).toBeUndefined();
   });
 
+  it('CORS allows the X-Session-Transport header (cookie session transport opt-in)', async () => {
+    const preflight = await request(gateway())
+      .options('/api/v1/transactions/transfer')
+      .set('Origin', 'https://app.example.com')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type,x-session-transport');
+    expect(preflight.headers['access-control-allow-headers'].toLowerCase().split(',')).toContain('x-session-transport');
+  });
+
   it('STAFF NETWORK: staff-only paths are refused from outside STAFF_ALLOWED_CIDRS', async () => {
     process.env.STAFF_ALLOWED_CIDRS = '10.20.0.0/16';
     try {
@@ -111,6 +120,43 @@ describe('API Gateway', () => {
       expect((await request(app).post('/api/v1/transactions/%E0%A4%A').send({})).status).toBe(400);
     } finally {
       delete process.env.STAFF_ALLOWED_CIDRS;
+    }
+  });
+
+  it('UPSTREAM ABORT: an upstream dying mid-response aborts the client response instead of leaving it hanging', async () => {
+    // Sends headers and part of the body, then drops the connection
+    const dying = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"partial":');
+      setTimeout(() => res.socket?.destroy(), 50);
+    });
+    dying.listen(0);
+    await new Promise((r) => dying.once('listening', r));
+    const gatewayServer = createGateway({
+      routes: [{ name: 'transaction-service', prefix: '/api/v1/transactions', target: `http://127.0.0.1:${(dying.address() as AddressInfo).port}` }],
+    }).listen(0);
+    await new Promise((r) => gatewayServer.once('listening', r));
+    try {
+      const outcome = await new Promise<string>((resolve) => {
+        const timer = setTimeout(() => resolve('hung'), 3000);
+        const req = http.get(`http://127.0.0.1:${(gatewayServer.address() as AddressInfo).port}/api/v1/transactions/accounts/x/history`, (res) => {
+          res.on('data', () => {});
+          res.on('error', () => {});
+          res.on('close', () => {
+            clearTimeout(timer);
+            resolve(res.complete ? 'complete' : 'aborted');
+          });
+        });
+        req.on('error', () => {
+          clearTimeout(timer);
+          resolve('aborted');
+        });
+      });
+      expect(outcome).toBe('aborted');
+    } finally {
+      gatewayServer.closeAllConnections?.();
+      gatewayServer.close();
+      dying.close();
     }
   });
 
