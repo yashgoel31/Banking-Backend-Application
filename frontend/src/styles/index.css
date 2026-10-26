@@ -1,0 +1,127 @@
+@import '@fontsource-variable/inter';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens (HSL channels). Light: trust-navy ink on a cool neutral canvas, one precise blue primary,
+ * emerald for money in, rose for money out. Every text pairing below meets WCAG AA (4.5:1).
+ */
+@layer base {
+  :root {
+    --canvas: 220 23% 97%;
+    --background: 0 0% 100%;
+    --foreground: 222 47% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 9%;
+    --primary: 226 80% 53%;
+    --primary-foreground: 0 0% 100%;
+    --primary-soft: 226 100% 96%;
+    --secondary: 220 14% 95%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 217 15% 40%;
+    --accent: 220 14% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 347 77% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-soft: 350 100% 97%;
+    --success: 161 94% 25%;
+    --success-foreground: 0 0% 100%;
+    --success-soft: 152 76% 95%;
+    --warning: 26 90% 37%;
+    --warning-foreground: 0 0% 100%;
+    --warning-soft: 48 100% 95%;
+    --info: 201 96% 32%;
+    --info-soft: 204 100% 96%;
+    --border: 220 13% 90%;
+    --input: 220 13% 86%;
+    --ring: 226 80% 53%;
+    --sidebar: 222 47% 7%;
+    --sidebar-foreground: 220 20% 92%;
+    --sidebar-muted: 218 15% 62%;
+    --sidebar-active: 222 35% 15%;
+    --radius: 0.625rem;
+    color-scheme: light;
+  }
+
+  .dark {
+    --canvas: 224 40% 5%;
+    --background: 224 36% 7%;
+    --foreground: 220 25% 93%;
+    --card: 224 33% 9%;
+    --card-foreground: 220 25% 93%;
+    --popover: 224 33% 10%;
+    --popover-foreground: 220 25% 93%;
+    --primary: 224 100% 70%;
+    --primary-foreground: 224 60% 8%;
+    --primary-soft: 226 45% 16%;
+    --secondary: 222 25% 15%;
+    --secondary-foreground: 220 25% 93%;
+    --muted: 222 25% 13%;
+    --muted-foreground: 218 15% 66%;
+    --accent: 222 25% 16%;
+    --accent-foreground: 220 25% 93%;
+    --destructive: 350 89% 70%;
+    --destructive-foreground: 350 60% 10%;
+    --destructive-soft: 348 45% 14%;
+    --success: 158 64% 55%;
+    --success-foreground: 160 70% 8%;
+    --success-soft: 162 50% 11%;
+    --warning: 38 92% 60%;
+    --warning-foreground: 30 70% 9%;
+    --warning-soft: 36 50% 12%;
+    --info: 199 89% 65%;
+    --info-soft: 204 50% 13%;
+    --border: 222 22% 17%;
+    --input: 222 20% 22%;
+    --ring: 224 100% 70%;
+    --sidebar: 225 40% 4%;
+    --sidebar-foreground: 220 20% 90%;
+    --sidebar-muted: 218 13% 60%;
+    --sidebar-active: 222 30% 13%;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-canvas text-foreground antialiased;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum', 'cv11';
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+}
