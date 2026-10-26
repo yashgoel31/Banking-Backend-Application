@@ -51,6 +51,7 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
           return { count: 1 };
         }),
       },
+      staffAccessLog: { create: jest.fn() },
       outboxEvent: { create: jest.fn() },
       auditLog: { create: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
       $queryRaw: jest.fn().mockResolvedValue([]),
@@ -423,6 +424,55 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
         { id: 'acc-1', isActive: true, closed: false, dailyLimitPaise: '10000000', balanceInPaise: '0', controlVersion: 3 },
       ]);
       expect((await accountService.reconcileWithLedger()).repaired).toBe(0);
+    });
+  });
+
+  describe('staff access log', () => {
+    it('a staff read of an account is recorded; the owner reading their own is not', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account());
+      await accountService.viewAccount('acc-1', support);
+      expect(mockPrisma.staffAccessLog.create).toHaveBeenCalledWith({
+        data: { actorId: 'support-user-id', actorRole: 'SUPPORT', customerId: 'alice-cust-id', accountId: 'acc-1', action: 'VIEW_ACCOUNT' },
+      });
+      mockPrisma.staffAccessLog.create.mockClear();
+      await accountService.viewAccount('acc-1', alice);
+      expect(mockPrisma.staffAccessLog.create).not.toHaveBeenCalled();
+    });
+
+    it('NO READ WITHOUT A LOG: if the access log cannot be written, the data is not returned', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account());
+      mockPrisma.staffAccessLog.create.mockRejectedValue(new Error('db down'));
+      await expect(accountService.viewAccount('acc-1', support)).rejects.toThrow('db down');
+    });
+
+    it("staff listing a customer's accounts is recorded; customers always get their own list", async () => {
+      mockPrisma.bankAccount.findMany.mockResolvedValue([account()]);
+      await accountService.listAccounts(support, 'alice-cust-id');
+      expect(mockPrisma.bankAccount.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { customerId: 'alice-cust-id' } }));
+      expect(mockPrisma.staffAccessLog.create).toHaveBeenCalledWith({
+        data: { actorId: 'support-user-id', actorRole: 'SUPPORT', customerId: 'alice-cust-id', accountId: null, action: 'LIST_ACCOUNTS' },
+      });
+
+      mockPrisma.staffAccessLog.create.mockClear();
+      await accountService.listAccounts(bob, 'alice-cust-id');
+      expect(mockPrisma.bankAccount.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { customerId: 'bob-intruder-id' } }));
+      // Staff listing their own accounts is a customer read
+      await accountService.listAccounts(support);
+      expect(mockPrisma.bankAccount.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { customerId: 'support-user-id' } }));
+      expect(mockPrisma.staffAccessLog.create).not.toHaveBeenCalled();
+    });
+
+    it('lookup by account number is recorded; an unknown number is a 404', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ accountNumber: '200000000006' }));
+      const found = await accountService.lookupByAccountNumber('200000000006', support);
+      expect(found.id).toBe('acc-1');
+      expect(mockPrisma.bankAccount.findUnique).toHaveBeenCalledWith({ where: { accountNumber: '200000000006' } });
+      expect(mockPrisma.staffAccessLog.create).toHaveBeenCalledWith({
+        data: { actorId: 'support-user-id', actorRole: 'SUPPORT', customerId: 'alice-cust-id', accountId: 'acc-1', action: 'LOOKUP_ACCOUNT' },
+      });
+
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(null);
+      await expect(accountService.lookupByAccountNumber('200000000014', support)).rejects.toThrow(NotFoundError);
     });
   });
 });
