@@ -2,17 +2,23 @@ import crypto from 'crypto';
 
 /**
  * Generates an authoritative 12-digit bank account number with Luhn algorithm checksum validation.
- * Structure: [4-digit Bank Branch Identifier] + [7-digit Random Sequence] + [1-digit Checksum]
+ * Structure: [1-digit Bank Prefix] + [10-digit Random Sequence] + [1-digit Checksum]
+ *
+ * 10 random digits give 10^10 numbers, so collisions stay rare for the life of the bank (the earlier
+ * '1001' + 7 digits allowed only 9 million). Numbers issued in that format remain valid: validation is
+ * length + Luhn only, and the new prefix '2' can never produce one of them.
  */
 export class AccountNumberGenerator {
-  private static readonly BRANCH_PREFIX = '1001';
+  private static readonly BANK_PREFIX = '2';
+  private static readonly SEQUENCE_SPACE = 10_000_000_000; // 10 digits
 
   /**
    * Generates a 12-digit valid bank account number
    */
   public static generate(): string {
-    const sequence = crypto.randomInt(1000000, 10000000).toString(); // 7 digits, CSPRNG so numbers aren't predictable
-    const payload = `${this.BRANCH_PREFIX}${sequence}`;
+    // CSPRNG so numbers aren't predictable; zero-padded so every sequence has exactly 10 digits
+    const sequence = crypto.randomInt(0, this.SEQUENCE_SPACE).toString().padStart(10, '0');
+    const payload = `${this.BANK_PREFIX}${sequence}`;
     const checkDigit = this.calculateLuhnCheckDigit(payload);
     return `${payload}${checkDigit}`;
   }

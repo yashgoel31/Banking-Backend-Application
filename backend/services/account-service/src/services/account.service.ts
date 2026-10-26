@@ -19,6 +19,10 @@ export const MAX_CUSTOMER_DAILY_LIMIT_PAISE = BigInt(
   process.env.MAX_CUSTOMER_DAILY_LIMIT_PAISE || '10000000'
 );
 export const MAX_ACCOUNTS_PER_CUSTOMER = Number(process.env.MAX_ACCOUNTS_PER_CUSTOMER || 5);
+const ACCOUNT_NUMBER_ATTEMPTS = 8;
+
+/** The ledger already holds this account number (e.g. an orphan of a failed opening): draw another one */
+class AccountNumberTakenError extends Error {}
 
 export interface CreateAccountDTO {
   customerId: string;
@@ -59,7 +63,7 @@ export class AccountService {
     }
 
     let account: BankAccount | null = null;
-    for (let attempt = 0; attempt < 5 && !account; attempt++) {
+    for (let attempt = 0; attempt < ACCOUNT_NUMBER_ATTEMPTS && !account; attempt++) {
       const accountNumber = AccountNumberGenerator.generate();
       try {
         account = await this.prisma.$transaction(
@@ -87,14 +91,21 @@ export class AccountService {
 
             // Provisioned INACTIVE inside our transaction: if our commit then fails, the orphan ledger
             // account can't send or receive money. It is activated only after the commit below.
-            await this.ledgerClient.provisionAccount({
-              id: created.id,
-              accountNumber: created.accountNumber,
-              customerId: created.customerId,
-              currency: created.currency,
-              dailyLimitPaise: created.dailyLimit.toString(),
-              isActive: false,
-            });
+            try {
+              await this.ledgerClient.provisionAccount({
+                id: created.id,
+                accountNumber: created.accountNumber,
+                customerId: created.customerId,
+                currency: created.currency,
+                dailyLimitPaise: created.dailyLimit.toString(),
+                isActive: false,
+              });
+            } catch (err) {
+              // 409: the ledger already has this number (an orphan from an opening whose commit failed).
+              // The id is fresh on every attempt, so this can only be the number.
+              if (err instanceof HttpError && err.statusCode === 409) throw new AccountNumberTakenError();
+              throw err;
+            }
 
             await this.stageEvent(tx, 'account.created.v1', created.id, {
               accountId: created.id,
@@ -110,8 +121,8 @@ export class AccountService {
           { timeout: 15000 }
         );
       } catch (err: any) {
-        // Unique violation on account_number: retry with a fresh number
-        if (err?.code === 'P2002') continue;
+        // Number already taken, here (unique violation) or in the ledger: retry with a fresh number
+        if (err?.code === 'P2002' || err instanceof AccountNumberTakenError) continue;
         throw err;
       }
     }
@@ -120,12 +131,22 @@ export class AccountService {
       throw new ConflictError('Failed to allocate unique account number. Please retry.');
     }
 
-    // If this fails the account stays unusable until reconcileWithLedger() activates it
-    await this.ledgerClient.updateAccount(account.id, {
-      isActive: true,
-      dailyLimitPaise: account.dailyLimit.toString(),
-      version: account.version,
-    });
+    // The account is committed: the client must get it back now. An error here would invite a retry that
+    // opens a second account, so a failed activation is left to reconcileWithLedger() (the ledger account
+    // stays INACTIVE, i.e. safe, until then) and alerted.
+    try {
+      const { applied } = await this.ledgerClient.updateAccount(account.id, {
+        isActive: true,
+        dailyLimitPaise: account.dailyLimit.toString(),
+        version: account.version,
+      });
+      if (!applied) {
+        // The ledger already holds a newer control state for this account (e.g. an immediate freeze): it stands
+        logger.error({ accountId: account.id, version: account.version, alert: 'ACCOUNT_LEDGER_ACTIVATION_NOT_APPLIED' }, 'Ledger did not apply the activation of a new account');
+      }
+    } catch (err) {
+      logger.error({ err, accountId: account.id, alert: 'ACCOUNT_LEDGER_ACTIVATION_FAILED' }, 'New account committed but not activated in the ledger; the reconciler will retry');
+    }
     return account;
   }
 
