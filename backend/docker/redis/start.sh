@@ -9,6 +9,15 @@
 # AOF persistence + noeviction: revocation state must never be dropped silently.
 set -eu
 : "${REDIS_AUTH_PASSWORD:?}" "${REDIS_CUSTOMER_PASSWORD:?}" "${REDIS_READER_PASSWORD:?}"
+# Refuse unreplaced .env.example placeholders (a CHANGE_ME password is a known password)
+for pair in "REDIS_AUTH_PASSWORD:$REDIS_AUTH_PASSWORD" "REDIS_CUSTOMER_PASSWORD:$REDIS_CUSTOMER_PASSWORD" \
+            "REDIS_READER_PASSWORD:$REDIS_READER_PASSWORD"; do
+  case "${pair#*:}" in
+    *[Cc][Hh][Aa][Nn][Gg][Ee]_[Mm][Ee]*)
+      echo "redis: ${pair%%:*} is still the CHANGE_ME placeholder from .env.example; refusing to start" >&2
+      exit 1 ;;
+  esac
+done
 exec redis-server \
   --appendonly yes --appendfsync everysec \
   --maxmemory 256mb --maxmemory-policy noeviction \
