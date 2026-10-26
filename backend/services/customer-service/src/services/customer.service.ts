@@ -36,7 +36,11 @@ export class CustomerService {
    * CACHE-ASIDE PATTERN:
    * 1. Query Redis cache first.
    * 2. On Cache Hit: return cached JSON immediately.
-   * 3. On Cache Miss: query PostgreSQL, populate Redis, and return result.
+   * 3. On Cache Miss: query PostgreSQL, populate Redis (only if still empty), and return result.
+   *
+   * Consistency: writers store the profile they just committed (see storeCommittedProfile), and a reader
+   * only fills an EMPTY slot (SET NX). A reader that loaded an older version before a concurrent write can
+   * therefore never replace what that writer stored. (The Redis ACL allows GET/SET/DEL only, no scripts.)
    */
   public async getProfileByUserId(
     userId: string
@@ -68,9 +72,9 @@ export class CustomerService {
       throw new NotFoundError('Customer profile not found');
     }
 
-    // 3. Populate Redis asynchronously with TTL
+    // 3. Populate Redis with TTL, unless a writer stored a (newer) profile meanwhile
     try {
-      await this.redis.set(cacheKey, JSON.stringify(profile), 'EX', this.cacheTTLSeconds);
+      await this.redis.set(cacheKey, JSON.stringify(profile), 'EX', this.cacheTTLSeconds, 'NX');
     } catch (cacheErr) {
       logger.warn({ err: cacheErr }, 'Redis cache write failed');
     }
@@ -100,23 +104,10 @@ export class CustomerService {
       },
     });
 
-    // Populate cache
-    try {
-      await this.redis.set(
-        this.getCacheKey(dto.userId),
-        JSON.stringify(profile),
-        'EX',
-        this.cacheTTLSeconds
-      );
-    } catch {}
-
+    await this.storeCommittedProfile(profile);
     return profile;
   }
 
-  /**
-   * CACHE INVALIDATION ON MUTATION:
-   * When profile fields update in PostgreSQL, immediately purge the stale Redis cache entry.
-   */
   /**
    * Updates the caller's own profile under a row lock. Every change bumps the profile version, so a KYC
    * review in progress no longer matches. Identity fields that KYC vouched for (full name, date of birth,
@@ -171,8 +162,26 @@ export class CustomerService {
       return result;
     });
 
-    await this.invalidateCache(userId);
+    await this.storeCommittedProfile(updated);
     return updated;
+  }
+
+  /**
+   * CACHE UPDATE ON MUTATION (write-through): after a commit, the cache gets the committed profile, unless it
+   * already holds a newer version (two writers finishing out of order). If Redis fails here, the entry is
+   * dropped so a stale profile can't outlive the write.
+   */
+  private async storeCommittedProfile(profile: CustomerProfile): Promise<void> {
+    const cacheKey = this.getCacheKey(profile.userId);
+    try {
+      const cached = await this.redis.get(cacheKey);
+      const cachedVersion = cached ? Number(JSON.parse(cached)?.version) : NaN;
+      if (Number.isInteger(cachedVersion) && cachedVersion > profile.version) return;
+      await this.redis.set(cacheKey, JSON.stringify(profile), 'EX', this.cacheTTLSeconds);
+    } catch (cacheErr) {
+      logger.warn({ err: cacheErr }, 'Redis cache update failed, dropping the entry');
+      await this.invalidateCache(profile.userId);
+    }
   }
 
   private async invalidateCache(userId: string): Promise<void> {
@@ -234,7 +243,7 @@ export class CustomerService {
       return tx.customerProfile.findUniqueOrThrow({ where: { userId } });
     });
 
-    await this.invalidateCache(userId);
+    await this.storeCommittedProfile(updated);
     return updated;
   }
 
