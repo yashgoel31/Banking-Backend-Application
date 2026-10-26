@@ -69,7 +69,10 @@ export function createApp(prisma: PrismaClient, deps: AccountAppDeps) {
           },
         },
         '/api/v1/accounts/{accountId}/daily-limit': {
-          patch: { summary: 'Change the daily outgoing limit (customers capped, BANK_ADMIN unrestricted)' },
+          patch: {
+            summary:
+              'Change the daily outgoing limit (BANK_ADMIN: any value, which becomes the bank ceiling; owner: lower freely, raise up to the customer cap and the bank ceiling)',
+          },
         },
       },
     });

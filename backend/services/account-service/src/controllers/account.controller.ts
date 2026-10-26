@@ -28,10 +28,12 @@ const accountIdParams = z.object({ accountId: z.string().uuid() });
 const listQuerySchema = z.object({ customerId: z.string().uuid().optional() });
 
 function toView(account: BankAccount): BankAccountView {
+  const { bankLimitCeiling, ...rest } = account;
   return {
-    ...account,
+    ...rest,
     dailyLimit: account.dailyLimit.toString(),
     dailyLimitPaise: account.dailyLimit.toString(),
+    bankLimitCeilingPaise: bankLimitCeiling === null ? null : bankLimitCeiling.toString(),
   };
 }
 
