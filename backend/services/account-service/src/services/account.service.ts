@@ -192,6 +192,9 @@ export class AccountService {
    * Write ordering keeps the two stores safe if one write fails: restrictive changes (freeze, close) hit
    * the ledger first, permissive ones (unfreeze) commit here first. A failure therefore leaves money
    * MORE restricted, never less, and reconcileWithLedger() repairs the difference.
+   *
+   * An administrator freezing an account that is already frozen (e.g. by its owner) places a bank hold:
+   * nothing changes for the customer, but lifting the freeze then needs a different administrator.
    */
   public async updateAccountStatus(
     accountId: string,
@@ -203,11 +206,12 @@ export class AccountService {
     if (account.status === AccountStatus.CLOSED) {
       throw new ConflictError('Cannot alter status of an already permanently closed account');
     }
-    if (account.status === status) {
+    const isAdmin = this.actsAsAdmin(actor, account);
+    const bankHold = account.status === status && status === AccountStatus.FROZEN && isAdmin;
+    if (account.status === status && (!bankHold || (await this.staffHolders(account)).has(actor.id))) {
       return account;
     }
 
-    const isAdmin = this.actsAsAdmin(actor, account);
     const ownerFreeze = account.customerId === actor.id && status === AccountStatus.FROZEN;
     if (!isAdmin && !ownerFreeze) {
       throw new ForbiddenError(
@@ -215,13 +219,9 @@ export class AccountService {
       );
     }
 
-    // Dual control: an account frozen by a staff member can only be unfrozen by a different one
+    // Dual control: an account frozen (or held) by a staff member can only be unfrozen by a different one
     if (status === AccountStatus.ACTIVE && account.status === AccountStatus.FROZEN) {
-      const lastFreeze = await this.prisma.auditLog.findFirst({
-        where: { targetId: accountId, action: 'ACCOUNT_STATUS_CHANGED' },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (lastFreeze && lastFreeze.actorId === actor.id && lastFreeze.actorId !== account.customerId) {
+      if ((await this.staffHolders(account)).has(actor.id)) {
         throw new ForbiddenError('An account you froze must be unfrozen by a different administrator');
       }
     }
@@ -245,14 +245,19 @@ export class AccountService {
       if (result.count !== 1) {
         throw new ConflictError('Account status changed concurrently, please retry');
       }
-      await this.stageEvent(tx, 'account.status.changed.v1', accountId, {
-        accountId,
-        customerId: account.customerId,
-        previousStatus: account.status,
-        status,
-        changedBy: actor.id,
-      });
-      await this.audit(tx, actor.id, 'ACCOUNT_STATUS_CHANGED', accountId, { from: account.status, to: status });
+      if (bankHold) {
+        // Same status, so no customer notice; the hold only changes who may lift the freeze
+        await this.audit(tx, actor.id, 'ACCOUNT_BANK_HOLD', accountId, { status });
+      } else {
+        await this.stageEvent(tx, 'account.status.changed.v1', accountId, {
+          accountId,
+          customerId: account.customerId,
+          previousStatus: account.status,
+          status,
+          changedBy: actor.id,
+        });
+        await this.audit(tx, actor.id, 'ACCOUNT_STATUS_CHANGED', accountId, { from: account.status, to: status });
+      }
       return tx.bankAccount.findUniqueOrThrow({ where: { id: accountId } });
     });
 
@@ -262,6 +267,27 @@ export class AccountService {
     }
 
     return updated;
+  }
+
+  /**
+   * Staff who froze the account, or placed a hold on it, since it was last frozen: the walk back stops at
+   * the status change into FROZEN (the newest ACCOUNT_STATUS_CHANGED row of a frozen account). The owner
+   * is not a holder: a customer's own freeze never stops an administrator from lifting it.
+   */
+  private async staffHolders(account: BankAccount): Promise<Set<string>> {
+    const history = await this.prisma.auditLog.findMany({
+      where: { targetId: account.id, action: { in: ['ACCOUNT_STATUS_CHANGED', 'ACCOUNT_BANK_HOLD'] } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: { actorId: true, action: true },
+    });
+    const holders = new Set<string>();
+    for (const row of history) {
+      holders.add(row.actorId);
+      if (row.action === 'ACCOUNT_STATUS_CHANGED') break;
+    }
+    holders.delete(account.customerId);
+    return holders;
   }
 
   /** Bumps the account's control version iff it is still `expected`; returns the new version */

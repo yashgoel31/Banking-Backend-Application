@@ -52,7 +52,7 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
         }),
       },
       outboxEvent: { create: jest.fn() },
-      auditLog: { create: jest.fn(), findFirst: jest.fn().mockResolvedValue(null) },
+      auditLog: { create: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
       $queryRaw: jest.fn().mockResolvedValue([]),
     };
     mockPrisma.$transaction = jest.fn((cb: any) => cb(mockPrisma));
@@ -191,6 +191,9 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
   });
 
   describe('updateAccountStatus', () => {
+    const freezeBy = (actorId: string) => ({ actorId, action: 'ACCOUNT_STATUS_CHANGED', details: { from: 'ACTIVE', to: 'FROZEN' } });
+    const holdBy = (actorId: string) => ({ actorId, action: 'ACCOUNT_BANK_HOLD', details: { status: 'FROZEN' } });
+
     it('freeze goes to the LEDGER FIRST (fail-safe ordering) and is audited', async () => {
       mockPrisma.bankAccount.findUnique.mockResolvedValue(account());
       mockPrisma.bankAccount.findUniqueOrThrow.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
@@ -225,10 +228,60 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
     it('DUAL CONTROL: an admin who froze an account cannot unfreeze it; another admin can', async () => {
       mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
       mockPrisma.bankAccount.findUniqueOrThrow.mockResolvedValue(account());
-      mockPrisma.auditLog.findFirst.mockResolvedValue({ actorId: 'admin-user-id', action: 'ACCOUNT_STATUS_CHANGED' });
+      mockPrisma.auditLog.findMany.mockResolvedValue([freezeBy('admin-user-id')]);
       await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, admin)).rejects.toThrow(ForbiddenError);
       const admin2 = { ...admin, id: 'admin-2' };
       await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, admin2)).resolves.toBeDefined();
+    });
+
+    it('BANK HOLD: an admin freezing an account the customer already froze records the hold (ledger first, no status event)', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
+      mockPrisma.bankAccount.findUniqueOrThrow.mockResolvedValue(account({ status: AccountStatus.FROZEN, version: 4 }));
+      mockPrisma.auditLog.findMany.mockResolvedValue([freezeBy('alice-cust-id')]);
+      await accountService.updateAccountStatus('acc-1', AccountStatus.FROZEN, admin);
+      expect(calls).toEqual(['reserve-version', 'ledger', 'db']);
+      expect(mockLedger.updateAccount).toHaveBeenCalledWith('acc-1', expect.objectContaining({ isActive: false, version: 4 }));
+      expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ actorId: 'admin-user-id', action: 'ACCOUNT_BANK_HOLD', targetId: 'acc-1' }),
+      });
+      // The status did not change, so no "your account is now FROZEN" notice is sent again
+      expect(mockPrisma.outboxEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('BANK HOLD: the admin who placed the hold cannot lift it alone; a different admin can', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
+      mockPrisma.bankAccount.findUniqueOrThrow.mockResolvedValue(account());
+      mockPrisma.auditLog.findMany.mockResolvedValue([holdBy('admin-user-id'), freezeBy('alice-cust-id')]);
+      await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, admin)).rejects.toThrow(ForbiddenError);
+      expect(calls).toEqual([]);
+      await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, { ...admin, id: 'admin-2' })).resolves.toBeDefined();
+    });
+
+    it('DUAL CONTROL: the admin who froze an account still cannot unfreeze it after a second admin confirmed the hold', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
+      mockPrisma.bankAccount.findUniqueOrThrow.mockResolvedValue(account());
+      mockPrisma.auditLog.findMany.mockResolvedValue([holdBy('admin-2'), freezeBy('admin-user-id')]);
+      await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, admin)).rejects.toThrow(ForbiddenError);
+      await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, { ...admin, id: 'admin-2' })).rejects.toThrow(ForbiddenError);
+      await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, { ...admin, id: 'admin-3' })).resolves.toBeDefined();
+    });
+
+    it('only holds placed since the account was last frozen count', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
+      mockPrisma.bankAccount.findUniqueOrThrow.mockResolvedValue(account());
+      // An old hold by this admin, lifted since; the account was then frozen again by the customer
+      mockPrisma.auditLog.findMany.mockResolvedValue([freezeBy('alice-cust-id'), { actorId: 'admin-2', action: 'ACCOUNT_STATUS_CHANGED', details: { from: 'FROZEN', to: 'ACTIVE' } }, holdBy('admin-user-id')]);
+      await expect(accountService.updateAccountStatus('acc-1', AccountStatus.ACTIVE, admin)).resolves.toBeDefined();
+    });
+
+    it('re-freezing is a no-op for the customer and for an admin who already holds the account', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ status: AccountStatus.FROZEN }));
+      mockPrisma.auditLog.findMany.mockResolvedValue([freezeBy('alice-cust-id')]);
+      await accountService.updateAccountStatus('acc-1', AccountStatus.FROZEN, alice);
+      mockPrisma.auditLog.findMany.mockResolvedValue([holdBy('admin-user-id'), freezeBy('alice-cust-id')]);
+      await accountService.updateAccountStatus('acc-1', AccountStatus.FROZEN, admin);
+      expect(calls).toEqual([]);
+      expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('SELF-UNFREEZE: a customer cannot unfreeze an account frozen by the bank', async () => {
