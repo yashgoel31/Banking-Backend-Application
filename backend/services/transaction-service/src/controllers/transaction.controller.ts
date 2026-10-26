@@ -166,18 +166,21 @@ export class TransactionController {
   public withdraw = wrap(async (req, res) => {
     const actor = getAuthenticatedUser(req);
     const body = withdrawSchema.parse(req.body);
-    await this.runIdempotent(req, res, 'withdrawal', body, async (tx) =>
-      cashResponse(
-        await this.tellerService.requestCashOperation(
-          {
-            type: 'WITHDRAWAL',
-            accountId: body.accountId,
-            amountInPaise: BigInt(body.amountInPaise),
-            description: body.description,
-            authorizationCode: body.authorizationCode,
-          },
-          actor,
-          tx
+    // A wrong code is counted only after the idempotent transaction has rolled back (one connection at a time)
+    await this.tellerService.recordingCodeFailures(() =>
+      this.runIdempotent(req, res, 'withdrawal', body, async (tx) =>
+        cashResponse(
+          await this.tellerService.requestCashOperation(
+            {
+              type: 'WITHDRAWAL',
+              accountId: body.accountId,
+              amountInPaise: BigInt(body.amountInPaise),
+              description: body.description,
+              authorizationCode: body.authorizationCode,
+            },
+            actor,
+            tx
+          )
         )
       )
     );
@@ -188,9 +191,14 @@ export class TransactionController {
     res.json({ success: true, data: await this.tellerService.acceptFloat(getAuthenticatedUser(req), BigInt(countedFloatPaise)) });
   });
 
+  /** Closes the session with a blind count, or (while CLOSED and not yet signed off) re-declares it */
   public closeSession = wrap(async (req, res) => {
     const { countedCashPaise } = countSchema.parse(req.body);
     res.json({ success: true, data: await this.tellerService.closeSession(getAuthenticatedUser(req), BigInt(countedCashPaise)) });
+  });
+
+  public currentSession = wrap(async (req, res) => {
+    res.json({ success: true, data: await this.tellerService.currentSession(getAuthenticatedUser(req)) });
   });
 
   // --- supervisor -----------------------------------------------------------
@@ -235,7 +243,8 @@ export class TransactionController {
   public listCashOperations = wrap(async (req, res) => {
     const { status } = cashListQuery.parse(req.query);
     const { limit, offset } = parsePagination(req.query);
-    res.json({ success: true, data: await this.tellerService.listCashOperations(status, limit, offset), pagination: { limit, offset } });
+    const data = await this.tellerService.listCashOperations(status, limit, offset, getAuthenticatedUser(req));
+    res.json({ success: true, data, pagination: { limit, offset } });
   });
 
   // --- reads ----------------------------------------------------------------

@@ -88,6 +88,7 @@ model Transaction {
   @@index([sourceAccountId])
   @@index([destinationAccountId])
   @@index([createdAt])
+  @@index([initiatedBy, destinationAccountId, createdAt]) // new-beneficiary cap: what a customer sent to a payee lately
   @@map("transactions")
 }
 
@@ -193,6 +194,7 @@ model AuditLog {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([actorId, createdAt])
+  @@index([action, targetId, createdAt]) // failure counters, e.g. wrong withdrawal codes per account
   @@map("audit_log")
 }
 
@@ -222,6 +224,11 @@ model TellerSession {
   closedAt        DateTime?           @map("closed_at")
   signedOffBy     String?             @map("signed_off_by")
   signedOffAt     DateTime?           @map("signed_off_at")
+  // The latest supervisor blind count that disagreed with the teller's declaration. A second, different
+  // administrator counting the same amount settles the session on the supervisors' count.
+  disputedCount   BigInt?             @map("disputed_count")
+  disputedBy      String?             @map("disputed_by")
+  disputedAt      DateTime?           @map("disputed_at")
 
   @@unique([tellerId, businessDate])
   @@index([status, businessDate])

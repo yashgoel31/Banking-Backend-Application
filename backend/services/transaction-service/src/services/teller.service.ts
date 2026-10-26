@@ -1,15 +1,17 @@
 import crypto from 'crypto';
-import { PrismaClient, Prisma } from '../../generated/client';
+import { PrismaClient, Prisma, TellerSession } from '../../generated/client';
 import { AuthenticatedUser, ConflictError, ForbiddenError, HttpError, logger } from '@banksphere/common';
 import { CashOperationDTO, CashOperationResult, TransactionResult, TransactionStatus, TransactionType } from '../types';
-import { AccountInactiveError, InsufficientFundsError, InvalidAmountError, NotFoundError } from '../errors';
+import { AccountInactiveError, InsufficientFundsError, InvalidAmountError, NotFoundError, WithdrawalCodeRejectedError } from '../errors';
 import {
   LedgerPolicy,
   LockedAccount,
+  Refusal,
   TxClient,
   advisoryLock,
   assertWithinDailyLimits,
   audit,
+  commitThenRefuse,
   defaultLedgerPolicy,
   generateReferenceId,
   hasStepUp,
@@ -128,29 +130,38 @@ export class TellerService {
         ? await tx.tellerSession.update({ where: { id: existing.id }, data })
         : await tx.tellerSession.create({ data });
       await audit(tx, supervisor.id, 'TELLER_FLOAT_ISSUED', session.id, { tellerId, openingFloat: openingFloat.toString() });
-      return this.sessionView(session, true);
+      return this.supervisorView(session);
     });
   }
 
   /** Step 2 (teller): count the float received; only an exact match books it vault -> drawer */
   public async acceptFloat(teller: AuthenticatedUser, countedFloat: bigint) {
-    return this.prisma.$transaction(async (tx) => {
-      await advisoryLock(tx, `teller:${teller.id}`);
-      const session = await tx.tellerSession.findFirst({ where: { tellerId: teller.id, status: 'ISSUED' } });
-      if (!session) throw new ConflictError('No float has been issued to you');
-      if (session.businessDate !== istBusinessDate()) throw new HttpError(409, 'STALE_TELLER_SESSION', 'This float was issued for a previous business day');
-      if (countedFloat !== session.openingFloat) {
-        await audit(tx, teller.id, 'TELLER_FLOAT_COUNT_MISMATCH', session.id, { counted: countedFloat.toString() });
-        throw new HttpError(409, 'FLOAT_MISMATCH', 'Your count does not match the issued float; recount with the supervisor');
-      }
-      if (session.openingFloat > 0n) {
-        const vault = await this.bankCashAccount(tx, 'VAULT_CASH');
-        await this.postCashMovement(tx, vault.id, session.drawerAccountId, session.openingFloat, teller.id, `Opening float ${session.businessDate}`);
-      }
-      const opened = await tx.tellerSession.update({ where: { id: session.id }, data: { status: 'OPEN', acceptedAt: new Date() } });
-      await audit(tx, teller.id, 'TELLER_SESSION_OPENED', session.id, { openingFloat: session.openingFloat.toString(), issuedBy: session.issuedBy });
-      return this.sessionView(opened, false);
-    });
+    return commitThenRefuse(
+      this.prisma.$transaction(async (tx) => {
+        await advisoryLock(tx, `teller:${teller.id}`);
+        const session = await tx.tellerSession.findFirst({ where: { tellerId: teller.id, status: 'ISSUED' } });
+        if (!session) throw new ConflictError('No float has been issued to you');
+        if (session.businessDate !== istBusinessDate()) throw new HttpError(409, 'STALE_TELLER_SESSION', 'This float was issued for a previous business day');
+        if (countedFloat !== session.openingFloat) {
+          // Committed (the request is still refused): repeated miscounts must stay visible
+          await audit(tx, teller.id, 'TELLER_FLOAT_COUNT_MISMATCH', session.id, { counted: countedFloat.toString() });
+          return new Refusal(new HttpError(409, 'FLOAT_MISMATCH', 'Your count does not match the issued float; recount with the supervisor'));
+        }
+        // Conditional on the issue that was read: a float cancelled (or cancelled and reissued) since then is not booked
+        const acceptedAt = new Date();
+        const accepted = await tx.tellerSession.updateMany({
+          where: { id: session.id, status: 'ISSUED', openingFloat: session.openingFloat, openedAt: session.openedAt },
+          data: { status: 'OPEN', acceptedAt },
+        });
+        if (accepted.count !== 1) throw new ConflictError('This float was withdrawn or reissued by the supervisor; check the current float');
+        if (session.openingFloat > 0n) {
+          const vault = await this.bankCashAccount(tx, 'VAULT_CASH');
+          await this.postCashMovement(tx, vault.id, session.drawerAccountId, session.openingFloat, teller.id, `Opening float ${session.businessDate}`);
+        }
+        await audit(tx, teller.id, 'TELLER_SESSION_OPENED', session.id, { openingFloat: session.openingFloat.toString(), issuedBy: session.issuedBy });
+        return this.tellerView({ ...session, status: 'OPEN', acceptedAt });
+      })
+    );
   }
 
   /** A supervisor can withdraw a float the teller never accepted */
@@ -162,48 +173,104 @@ export class TellerService {
 
   /**
    * Step 3 (teller): blind closing count. The teller is never shown what the ledger expects, so the count
-   * can't be fitted to it.
+   * can't be fitted to it. Until a supervisor has signed the session off, the teller may correct the count
+   * by closing again (re-declaration); the figure it replaces is kept in the audit trail.
    */
   public async closeSession(teller: AuthenticatedUser, countedCash: bigint) {
     if (countedCash < 0n) throw new InvalidAmountError('Counted cash cannot be negative');
     return this.prisma.$transaction(async (tx) => {
-      const session = await tx.tellerSession.findFirst({ where: { tellerId: teller.id, status: 'OPEN' } });
-      if (!session) throw new ConflictError('You have no open teller session');
       await advisoryLock(tx, `teller:${teller.id}`);
+      const session = await tx.tellerSession.findFirst({ where: { tellerId: teller.id, status: { in: ['OPEN', 'CLOSED'] } } });
+      if (!session) throw new ConflictError('You have no open teller session');
+      if (session.status === 'CLOSED') return this.redeclareClosingCount(tx, teller, session, countedCash);
       const pending = await tx.cashOperation.count({ where: { requestedBy: teller.id, status: 'PENDING_APPROVAL' } });
       if (pending) throw new ConflictError(`${pending} cash operation(s) still await approval; resolve them before closing`);
-      const closed = await tx.tellerSession.update({
-        where: { id: session.id },
-        data: { status: 'CLOSED', declaredClosing: countedCash, closedAt: new Date() },
+      // Conditional, so two concurrent closes (or a close racing anything else) can't both apply
+      const closedAt = new Date();
+      const closed = await tx.tellerSession.updateMany({
+        where: { id: session.id, status: 'OPEN' },
+        data: { status: 'CLOSED', declaredClosing: countedCash, closedAt },
       });
+      if (closed.count !== 1) throw new ConflictError('This session is no longer open');
       await audit(tx, teller.id, 'TELLER_SESSION_CLOSED', session.id, { counted: countedCash.toString() });
-      return { id: closed.id, status: closed.status, businessDate: closed.businessDate, closedAt: closed.closedAt };
+      return this.tellerView({ ...session, status: 'CLOSED', declaredClosing: countedCash, closedAt });
     });
+  }
+
+  private async redeclareClosingCount(tx: TxClient, teller: AuthenticatedUser, session: TellerSession, countedCash: bigint) {
+    // Conditional on the declaration that was read: a sign-off (or another re-declaration) wins the race
+    const updated = await tx.tellerSession.updateMany({
+      where: { id: session.id, status: 'CLOSED', declaredClosing: session.declaredClosing },
+      data: { declaredClosing: countedCash },
+    });
+    if (updated.count !== 1) throw new ConflictError('This session was just signed off or re-declared; check its status');
+    await audit(tx, teller.id, 'TELLER_CLOSING_REDECLARED', session.id, {
+      previous: session.declaredClosing?.toString() ?? null,
+      counted: countedCash.toString(),
+    });
+    return this.tellerView({ ...session, declaredClosing: countedCash });
   }
 
   /**
    * Step 4 (a different administrator): independent blind count. It must match the teller's count; then
    * the counted cash goes back to the vault and any difference to the ledger is posted to cash suspense
    * (shortage: debit suspense; overage: credit suspense) and alerted, leaving the drawer at exactly zero.
+   *
+   * A count that disagrees is refused but recorded on the session (the latest such count and who made it).
+   * If a second, DIFFERENT administrator later counts that same amount, the two supervisors' agreed count
+   * settles the session instead of the teller's declaration (alerted). The teller never settles their own
+   * session and one administrator can never supply both counts.
    */
   public async signOffSession(supervisor: AuthenticatedUser, sessionId: string, supervisorCount: bigint) {
     if (supervisorCount < 0n) throw new InvalidAmountError('Counted cash cannot be negative');
-    return this.prisma.$transaction(async (tx) => {
+    return commitThenRefuse(this.prisma.$transaction(async (tx) => {
       const [locked] = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM teller_sessions WHERE id = ${sessionId} FOR UPDATE`;
       if (!locked) throw new NotFoundError('Teller session not found');
       const session = await tx.tellerSession.findUniqueOrThrow({ where: { id: sessionId } });
       if (session.tellerId === supervisor.id) throw new ForbiddenError('A session must be signed off by a different administrator');
       if (session.status !== 'CLOSED') throw new ConflictError('Only a CLOSED session can be signed off');
-      if (supervisorCount !== session.declaredClosing) {
-        await audit(tx, supervisor.id, 'TELLER_COUNT_MISMATCH', sessionId, { supervisorCount: supervisorCount.toString() });
-        throw new HttpError(409, 'COUNT_MISMATCH', "Your count does not match the teller's; recount together");
+      const agreesWithTeller = supervisorCount === session.declaredClosing;
+      const confirmsDispute =
+        !agreesWithTeller && Boolean(session.disputedBy) && session.disputedBy !== supervisor.id && supervisorCount === session.disputedCount;
+      if (!agreesWithTeller && !confirmsDispute) {
+        // Committed although the sign-off is refused: the count is evidence, and a second supervisor may confirm it
+        await tx.tellerSession.update({
+          where: { id: sessionId },
+          data: { disputedCount: supervisorCount, disputedBy: supervisor.id, disputedAt: new Date() },
+        });
+        await audit(tx, supervisor.id, 'TELLER_COUNT_MISMATCH', sessionId, {
+          supervisorCount: supervisorCount.toString(),
+          previousDisputedCount: session.disputedCount?.toString() ?? null,
+          previousDisputedBy: session.disputedBy ?? null,
+        });
+        return new Refusal(
+          new HttpError(
+            409,
+            'COUNT_MISMATCH',
+            "Your count does not match the teller's; recount together. Your count is recorded: the same blind count from a second administrator also settles the session"
+          )
+        );
       }
       const [drawer] = await lockAccounts(tx, [session.drawerAccountId]);
       const expected = drawer.balance;
-      const discrepancy = supervisorCount - expected;
+      const counted = supervisorCount;
+      const discrepancy = counted - expected;
       const vault = await this.bankCashAccount(tx, 'VAULT_CASH');
-      if (supervisorCount > 0n) {
-        await this.postCashMovement(tx, drawer.id, vault.id, supervisorCount, supervisor.id, `Closing cash ${session.businessDate}`);
+      if (confirmsDispute) {
+        logger.warn(
+          {
+            sessionId,
+            tellerId: session.tellerId,
+            declared: session.declaredClosing?.toString() ?? null,
+            agreedCount: counted.toString(),
+            supervisors: [session.disputedBy, supervisor.id],
+            alert: 'TELLER_DECLARATION_DISPUTED',
+          },
+          "Two administrators' blind counts overrule the teller's declared closing count"
+        );
+      }
+      if (counted > 0n) {
+        await this.postCashMovement(tx, drawer.id, vault.id, counted, supervisor.id, `Closing cash ${session.businessDate}`);
       }
       if (discrepancy !== 0n) {
         const suspense = await this.bankCashAccount(tx, 'CASH_SUSPENSE');
@@ -222,9 +289,14 @@ export class TellerService {
         where: { id: sessionId },
         data: { status: 'RECONCILED', expectedClosing: expected, discrepancy, signedOffBy: supervisor.id, signedOffAt: new Date() },
       });
-      await audit(tx, supervisor.id, 'TELLER_SESSION_SIGNED_OFF', sessionId, { expected: expected.toString(), discrepancy: discrepancy.toString() });
-      return this.sessionView(reconciled, true);
-    });
+      await audit(tx, supervisor.id, 'TELLER_SESSION_SIGNED_OFF', sessionId, {
+        counted: counted.toString(),
+        expected: expected.toString(),
+        discrepancy: discrepancy.toString(),
+        ...(confirmsDispute && { declared: session.declaredClosing?.toString() ?? null, disputedBy: session.disputedBy }),
+      });
+      return this.supervisorView(reconciled);
+    }));
   }
 
   public async listSessions(status: 'ISSUED' | 'OPEN' | 'CLOSED' | 'RECONCILED' | 'CANCELLED' | undefined, limit: number, offset: number) {
@@ -234,20 +306,64 @@ export class TellerService {
       take: limit,
       skip: offset,
     });
-    return rows.map((r) => this.sessionView(r, true));
+    return rows.map((r) => this.supervisorView(r));
   }
 
-  /** Expected cash and discrepancy are supervisor-only information until sign-off */
-  private sessionView<T extends { openingFloat: bigint; declaredClosing: bigint | null; expectedClosing: bigint | null; discrepancy: bigint | null }>(
-    s: T,
-    supervisorView: boolean
-  ) {
+  /** The teller's own session: today's (IST business date) if any, else their latest unfinished one */
+  public async currentSession(teller: AuthenticatedUser) {
+    const today = await this.prisma.tellerSession.findUnique({
+      where: { tellerId_businessDate: { tellerId: teller.id, businessDate: istBusinessDate() } },
+    });
+    const session =
+      today ??
+      (await this.prisma.tellerSession.findFirst({
+        where: { tellerId: teller.id, status: { in: ['ISSUED', 'OPEN', 'CLOSED'] } },
+        orderBy: [{ businessDate: 'desc' }, { openedAt: 'desc' }],
+      }));
+    return session ? this.tellerView(session) : null;
+  }
+
+  /**
+   * What a teller may see of a session: never the drawer account or any count, and not even the issued
+   * float until they have counted and accepted it, so both of their counts are blind.
+   */
+  private tellerView(s: TellerSession) {
     return {
-      ...s,
+      id: s.id,
+      tellerId: s.tellerId,
+      businessDate: s.businessDate,
+      openingFloat: s.status === 'ISSUED' ? null : s.openingFloat.toString(),
+      issuedBy: s.issuedBy,
+      status: s.status,
+      openedAt: s.openedAt,
+      acceptedAt: s.acceptedAt,
+      closedAt: s.closedAt,
+      signedOffBy: s.signedOffBy,
+      signedOffAt: s.signedOffAt,
+    };
+  }
+
+  /**
+   * Supervisors (and support) see the counts only once the session is RECONCILED: before that, the
+   * teller's declaration or a first supervisor's disputed count could be copied instead of counted.
+   */
+  private supervisorView(s: TellerSession) {
+    const counts: Partial<Record<'declaredClosing' | 'expectedClosing' | 'discrepancy' | 'disputedCount', string | null>> =
+      s.status === 'RECONCILED'
+        ? {
+            declaredClosing: s.declaredClosing?.toString() ?? null,
+            expectedClosing: s.expectedClosing?.toString() ?? null,
+            discrepancy: s.discrepancy?.toString() ?? null,
+            disputedCount: s.disputedCount?.toString() ?? null,
+          }
+        : {};
+    return {
+      ...this.tellerView(s),
       openingFloat: s.openingFloat.toString(),
-      declaredClosing: supervisorView ? (s.declaredClosing?.toString() ?? null) : undefined,
-      expectedClosing: supervisorView ? (s.expectedClosing?.toString() ?? null) : undefined,
-      discrepancy: supervisorView ? (s.discrepancy?.toString() ?? null) : undefined,
+      drawerAccountId: s.drawerAccountId,
+      disputedBy: s.disputedBy,
+      disputedAt: s.disputedAt,
+      ...counts,
     };
   }
 
@@ -307,8 +423,20 @@ export class TellerService {
     return { authorizationCode: code, accountId, amountInPaise: amount.toString(), expiresAt };
   }
 
-  /** Validates and consumes the customer's code inside the teller's transaction */
-  private async consumeWithdrawalCode(tx: TxClient, accountId: string, amount: bigint, code: string | undefined, cashOperationId: string) {
+  /**
+   * Validates and consumes the customer's code inside the teller's transaction. A wrong code (or amount)
+   * only throws: the money transaction fails first and the failure is counted afterwards, in its own short
+   * transaction (recordingCodeFailures), so one request never holds a second pooled connection (plus the
+   * teller's advisory lock) while it waits for another.
+   */
+  private async consumeWithdrawalCode(
+    tx: TxClient,
+    accountId: string,
+    amount: bigint,
+    code: string | undefined,
+    cashOperationId: string,
+    tellerId: string
+  ) {
     const invalid = () => new HttpError(403, 'WITHDRAWAL_NOT_AUTHORISED', 'A valid customer withdrawal code for this account and amount is required');
     if (!code || !/^\d{8}$/.test(code)) throw invalid();
     const auth = await tx.withdrawalAuthorization.findFirst({
@@ -318,16 +446,7 @@ export class TellerService {
     if (!auth) throw invalid();
     const presented = Buffer.from(hashCode(auth.id, code));
     if (auth.amount !== amount || !crypto.timingSafeEqual(presented, Buffer.from(auth.codeHash))) {
-      // Count failures per account (append-only audit) and burn the code after too many wrong guesses
-      await audit(this.prisma, 'system', 'WITHDRAWAL_CODE_FAILED', accountId);
-      const failures = await this.prisma.auditLog.count({
-        where: { action: 'WITHDRAWAL_CODE_FAILED', targetId: accountId, createdAt: { gte: auth.createdAt } },
-      });
-      if (failures >= CODE_ATTEMPTS_BEFORE_LOCK) {
-        await this.prisma.withdrawalAuthorization.updateMany({ where: { accountId, usedAt: null }, data: { usedAt: new Date() } });
-        logger.warn({ accountId, alert: 'WITHDRAWAL_CODE_BRUTE_FORCE' }, 'Withdrawal codes invalidated after repeated wrong attempts');
-      }
-      throw invalid();
+      throw new WithdrawalCodeRejectedError(accountId, auth.createdAt, tellerId);
     }
     const claimed = await tx.withdrawalAuthorization.updateMany({
       where: { id: auth.id, usedAt: null },
@@ -336,14 +455,50 @@ export class TellerService {
     if (claimed.count !== 1) throw invalid();
   }
 
+  /**
+   * Runs a money transaction; if it refused a wrong withdrawal code, records that failure once the
+   * transaction has rolled back. Callers that pass their own transaction to requestCashOperation (the
+   * idempotent HTTP path) wrap the whole transaction in this.
+   */
+  public async recordingCodeFailures<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (err) {
+      if (err instanceof WithdrawalCodeRejectedError) await this.recordWithdrawalCodeFailure(err);
+      throw err;
+    }
+  }
+
+  /** Counts failures per account (append-only audit) and burns the codes after too many wrong guesses */
+  private async recordWithdrawalCodeFailure(failure: WithdrawalCodeRejectedError): Promise<void> {
+    const { accountId } = failure;
+    await this.prisma.$transaction(async (tx) => {
+      // Serialised per account, so concurrent wrong guesses can't all count below the threshold
+      await advisoryLock(tx, `withdrawal-code:${accountId}`);
+      await audit(tx, failure.tellerId, 'WITHDRAWAL_CODE_FAILED', accountId);
+      // Served by audit_log(action, target_id, created_at)
+      const failures = await tx.auditLog.count({
+        where: { action: 'WITHDRAWAL_CODE_FAILED', targetId: accountId, createdAt: { gte: failure.authorizationCreatedAt } },
+      });
+      if (failures >= CODE_ATTEMPTS_BEFORE_LOCK) {
+        await tx.withdrawalAuthorization.updateMany({ where: { accountId, usedAt: null }, data: { usedAt: new Date() } });
+        logger.warn({ accountId, alert: 'WITHDRAWAL_CODE_BRUTE_FORCE' }, 'Withdrawal codes invalidated after repeated wrong attempts');
+      }
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Cash operations (maker-checker)
   // ---------------------------------------------------------------------------
 
+  /**
+   * With `txClient`, runs inside the caller's transaction, and the caller wraps that transaction in
+   * recordingCodeFailures; without it, this runs (and records code failures) on its own.
+   */
   public async requestCashOperation(dto: CashOperationDTO, teller: AuthenticatedUser, txClient?: TxClient): Promise<CashOperationResult> {
     if (dto.amountInPaise <= 0n) throw new InvalidAmountError();
 
-    return this.inTransaction(txClient, async (tx) => {
+    const work = async (tx: TxClient): Promise<CashOperationResult> => {
       const account = await tx.ledgerAccount.findUnique({ where: { id: dto.accountId } });
       if (!account || account.kind !== 'CUSTOMER') throw new NotFoundError('Account not found');
       if (account.customerId === teller.id) {
@@ -356,7 +511,7 @@ export class TellerService {
 
       const operationId = crypto.randomUUID();
       if (dto.type === 'WITHDRAWAL') {
-        await this.consumeWithdrawalCode(tx, dto.accountId, dto.amountInPaise, dto.authorizationCode, operationId);
+        await this.consumeWithdrawalCode(tx, dto.accountId, dto.amountInPaise, dto.authorizationCode, operationId, teller.id);
       }
 
       const executedToday = await tx.cashOperation.aggregate({
@@ -393,7 +548,8 @@ export class TellerService {
         transactionId: transaction.transactionId,
       });
       return { status: 'EXECUTED', cashOperationId: operation.id, transaction };
-    });
+    };
+    return txClient ? work(txClient) : this.recordingCodeFailures(() => this.inTransaction(undefined, work));
   }
 
   public async approveCashOperation(cashOperationId: string, approver: AuthenticatedUser, txClient?: TxClient): Promise<CashOperationResult> {
@@ -456,9 +612,15 @@ export class TellerService {
     return result.count;
   }
 
-  public async listCashOperations(status: 'PENDING_APPROVAL' | 'EXECUTED' | 'REJECTED' | undefined, limit: number, offset: number) {
+  /** Tellers see only the operations they requested; supervisors and support see every teller's */
+  public async listCashOperations(
+    status: 'PENDING_APPROVAL' | 'EXECUTED' | 'REJECTED' | undefined,
+    limit: number,
+    offset: number,
+    actor: AuthenticatedUser
+  ) {
     const rows = await this.prisma.cashOperation.findMany({
-      where: status ? { status } : undefined,
+      where: { ...(status && { status }), ...(actor.role === 'TELLER' && { requestedBy: actor.id }) },
       orderBy: { createdAt: 'desc' },
       take: limit,
       skip: offset,

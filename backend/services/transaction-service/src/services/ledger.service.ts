@@ -1,5 +1,5 @@
-import { PrismaClient, Prisma } from '../../generated/client';
-import { AuthenticatedUser, ConflictError, HttpError, isStaff, logger } from '@banksphere/common';
+import { Beneficiary, PrismaClient, Prisma } from '../../generated/client';
+import { AuthenticatedUser, ConflictError, HttpError, acquireJobLease, isStaff, logger } from '@banksphere/common';
 import {
   TransferDTO,
   TransactionResult,
@@ -106,6 +106,17 @@ export class LedgerService {
       }
       await advisoryLock(tx, `customer-outflow:${actor.id}`);
 
+      // Payee state and the new-payee total are read BEFORE the row locks: every transfer by this customer
+      // is serialised by the lock above, so the total can't change underneath, and the aggregate doesn't run
+      // while the destination row is locked
+      const beneficiary = destinationAccountId
+        ? await tx.beneficiary.findUnique({ where: { customerId_accountId: { customerId: actor.id, accountId: destinationAccountId } } })
+        : null;
+      const sentToNewPayee =
+        beneficiary && !beneficiary.revokedAt && destinationAccountId
+          ? await this.sentToNewPayee(tx, actor.id, destinationAccountId, beneficiary.activatesAt)
+          : null;
+
       const accounts = await lockAccounts(tx, destinationAccountId ? [sourceAccountId, destinationAccountId] : [sourceAccountId]);
       const sourceAccount = accounts.find((a) => a.id === sourceAccountId)!;
       const destAccount = destinationAccountId ? accounts.find((a) => a.id === destinationAccountId) : undefined;
@@ -122,10 +133,6 @@ export class LedgerService {
       // 2. Third-party payees must be registered before anything is revealed about them: an unregistered
       //    number gets the same answer whether it exists, is frozen or was never issued
       const ownDestination = destAccount?.customer_id === actor.id && destAccount.kind === 'CUSTOMER';
-      const beneficiary =
-        !ownDestination && destinationAccountId
-          ? await tx.beneficiary.findUnique({ where: { customerId_accountId: { customerId: actor.id, accountId: destinationAccountId } } })
-          : null;
       if (!ownDestination && (!beneficiary || beneficiary.revokedAt)) {
         throw beneficiaryRequired();
       }
@@ -145,8 +152,8 @@ export class LedgerService {
       }
 
       // 4. Payee controls for third-party transfers
-      if (!ownDestination) {
-        await this.assertBeneficiaryAllows(tx, actor.id, destAccount.id, amountInPaise);
+      if (!ownDestination && beneficiary) {
+        this.assertBeneficiaryAllows(beneficiary, sentToNewPayee, amountInPaise);
       }
 
       const transaction = await tx.transaction.create({
@@ -181,32 +188,38 @@ export class LedgerService {
     });
   }
 
-  private async assertBeneficiaryAllows(tx: TxClient, customerId: string, accountId: string, amount: bigint): Promise<void> {
-    const beneficiary = await tx.beneficiary.findUnique({ where: { customerId_accountId: { customerId, accountId } } });
+  /**
+   * While a beneficiary is new (active, and activated less than 24 hours ago), what this customer sent to
+   * that account over the trailing 24 hours, whatever its add/remove history: removing and re-adding a payee
+   * must not reset its first-day cap. Null when the payee is not (or not yet) in its first active day.
+   * Served by the transactions(initiated_by, destination_account_id, created_at) index.
+   */
+  private async sentToNewPayee(tx: TxClient, customerId: string, accountId: string, activatesAt: Date): Promise<bigint | null> {
     const now = Date.now();
-    if (!beneficiary || beneficiary.revokedAt) {
-      throw beneficiaryRequired();
-    }
-    if (beneficiary.activatesAt.getTime() > now) {
+    const activeFor = now - activatesAt.getTime();
+    if (activeFor < 0 || activeFor >= 24 * 3600_000) return null;
+    const sent = await tx.transaction.aggregate({
+      _sum: { amount: true },
+      where: {
+        type: TransactionType.TRANSFER,
+        initiatedBy: customerId,
+        destinationAccountId: accountId,
+        createdAt: { gte: new Date(now - 24 * 3600_000) },
+      },
+    });
+    return sent._sum.amount ?? 0n;
+  }
+
+  private assertBeneficiaryAllows(beneficiary: Beneficiary, sentToNewPayee: bigint | null, amount: bigint): void {
+    if (beneficiary.activatesAt.getTime() > Date.now()) {
       throw new HttpError(422, 'BENEFICIARY_COOLING_OFF', `This beneficiary becomes active at ${beneficiary.activatesAt.toISOString()}`);
     }
-    if (now - beneficiary.activatesAt.getTime() < 24 * 3600_000) {
-      const sent = await tx.transaction.aggregate({
-        _sum: { amount: true },
-        where: {
-          type: TransactionType.TRANSFER,
-          initiatedBy: customerId,
-          destinationAccountId: accountId,
-          createdAt: { gte: beneficiary.activatesAt },
-        },
-      });
-      if ((sent._sum.amount ?? 0n) + amount > this.policy.newBeneficiaryLimit) {
-        throw new HttpError(
-          422,
-          'NEW_BENEFICIARY_LIMIT',
-          `A new beneficiary can receive at most ${this.policy.newBeneficiaryLimit.toString()} paise in its first 24 hours`
-        );
-      }
+    if (sentToNewPayee !== null && sentToNewPayee + amount > this.policy.newBeneficiaryLimit) {
+      throw new HttpError(
+        422,
+        'NEW_BENEFICIARY_LIMIT',
+        `A new beneficiary can receive at most ${this.policy.newBeneficiaryLimit.toString()} paise in its first 24 hours`
+      );
     }
   }
 
@@ -214,9 +227,16 @@ export class LedgerService {
   // Reads
   // ---------------------------------------------------------------------------
 
+  /**
+   * Customer accounts: the owner or staff. Cash accounts (teller drawers, vault, suspense) only to a
+   * BANK_ADMIN: a teller must not learn their drawer's expected cash before the blind closing count.
+   */
   private async getReadableAccount(accountId: string, actor: AuthenticatedUser, action: string) {
     const account = await this.prisma.ledgerAccount.findUnique({ where: { id: accountId } });
-    if (!account || (account.customerId !== actor.id && !isStaff(actor))) {
+    const readable =
+      account &&
+      (account.kind === 'CUSTOMER' ? account.customerId === actor.id || isStaff(actor) : actor.role === 'BANK_ADMIN');
+    if (!account || !readable) {
       throw new NotFoundError('Account not found');
     }
     if (account.customerId !== actor.id) {
@@ -385,6 +405,9 @@ export class LedgerService {
     // One REPEATABLE READ snapshot, so all three checks see the same instant even while money moves
     return this.prisma.$transaction(
       async (tx) => {
+    // Full scans: the app role's 30s statement_timeout is meant for request paths. This transaction gets
+    // its own, just below its 120s transaction timeout (scale follow-up: reconcile incrementally)
+    await tx.$executeRaw`SET LOCAL statement_timeout = '110s'`;
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT a.id
       FROM ledger_accounts a
@@ -419,6 +442,26 @@ export class LedgerService {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, timeout: 120_000, maxWait: 10_000 }
     );
+  }
+
+  private reconciling = false;
+
+  /**
+   * Periodic job: one replica at a time (lease) and one run at a time per process. A reconciliation that
+   * cannot run (timeout, lost connection, ...) is itself an alert: silence must not look like "balanced".
+   */
+  public async runScheduledReconciliation(leaseSeconds: number): Promise<void> {
+    if (this.reconciling) return;
+    this.reconciling = true;
+    try {
+      if (!(await acquireJobLease(this.prisma, 'ledger-reconcile', leaseSeconds))) return;
+      const r = await this.reconcileBalances();
+      logger.info({ checked: r.checked, mismatches: r.mismatches.length, zeroSumDelta: r.zeroSumDelta }, 'Ledger reconciliation done');
+    } catch (err) {
+      logger.error({ err, alert: 'LEDGER_RECONCILIATION_ERROR' }, 'Ledger reconciliation could not run');
+    } finally {
+      this.reconciling = false;
+    }
   }
 
 }
