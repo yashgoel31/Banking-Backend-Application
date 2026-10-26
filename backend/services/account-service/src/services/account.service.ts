@@ -13,6 +13,7 @@ import {
 import { AccountNumberGenerator } from '../utils/account-number.generator';
 import { LedgerClient } from '../clients/ledger.client';
 import { CustomerClient } from '../clients/customer.client';
+import { StaffAccessAction } from '../types';
 
 export const DEFAULT_DAILY_LIMIT_PAISE = 10000000n; // ₹1,00,000.00
 export const MAX_CUSTOMER_DAILY_LIMIT_PAISE = BigInt(
@@ -164,6 +165,45 @@ export class AccountService {
     }
 
     return account;
+  }
+
+  /** Account details for the API: a staff read of someone else's account is recorded first */
+  public async viewAccount(accountId: string, actor: AuthenticatedUser): Promise<BankAccount> {
+    const account = await this.getAccountById(accountId, actor);
+    await this.logStaffAccess(actor, account.customerId, account.id, 'VIEW_ACCOUNT');
+    return account;
+  }
+
+  /** Staff may list any customer's accounts (recorded); customers always get their own */
+  public async listAccounts(actor: AuthenticatedUser, customerId?: string): Promise<BankAccount[]> {
+    const targetCustomerId = isStaff(actor) && customerId ? customerId : actor.id;
+    const accounts = await this.getAccountsByCustomerId(targetCustomerId);
+    await this.logStaffAccess(actor, targetCustomerId, null, 'LIST_ACCOUNTS');
+    return accounts;
+  }
+
+  /** Staff lookup of an account by its number (e.g. a teller identifying a customer's account) */
+  public async lookupByAccountNumber(accountNumber: string, actor: AuthenticatedUser): Promise<BankAccount> {
+    const account = await this.prisma.bankAccount.findUnique({ where: { accountNumber } });
+    if (!account) throw new NotFoundError('Bank account not found');
+    await this.logStaffAccess(actor, account.customerId, account.id, 'LOOKUP_ACCOUNT');
+    return account;
+  }
+
+  /**
+   * Who on staff read which customer's accounts (append-only). Written before the data is returned, so
+   * there is no read without a record. A staff member's own accounts are a customer read.
+   */
+  private async logStaffAccess(
+    actor: AuthenticatedUser,
+    customerId: string,
+    accountId: string | null,
+    action: StaffAccessAction
+  ): Promise<void> {
+    if (!isStaff(actor) || customerId === actor.id) return;
+    await this.prisma.staffAccessLog.create({
+      data: { actorId: actor.id, actorRole: actor.role, customerId, accountId, action },
+    });
   }
 
   /**
