@@ -1199,6 +1199,7 @@ export class AuthService {
       accessToken,
       refreshToken: rawRefreshToken,
       expiresInSeconds: this.tokenService.accessTokenTtlSeconds,
+      refreshExpiresAt: expiresAt,
     };
   }
 }

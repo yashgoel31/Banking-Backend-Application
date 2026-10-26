@@ -16,6 +16,8 @@ export interface GeneratedTokens {
   accessToken: string;
   refreshToken: string;
   expiresInSeconds: number;
+  /** When the refresh token stops working (internal: response bodies are built field by field) */
+  refreshExpiresAt: Date;
 }
 
 const DURATION_UNITS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };

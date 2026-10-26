@@ -1,8 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { clientIpKey, getAuthenticatedUser, parsePagination, readBearerToken, verifyAccessToken } from '@banksphere/common';
+import {
+  UnauthorizedError,
+  clientIpKey,
+  getAuthenticatedUser,
+  parsePagination,
+  readBearerToken,
+  verifyAccessToken,
+} from '@banksphere/common';
 import { AuthService, LoginContext } from '../services/auth.service';
 import { AdminRequestService } from '../services/admin-requests.service';
+import { clearSessionCookie, issueTokens, readSessionCookie, wantsCookieTransport } from './session-transport';
 
 const emailSchema = z
   .string()
@@ -49,6 +57,8 @@ const mfaDisableSchema = z.object({ password: z.string().min(1).max(128), code: 
 const refreshSchema = z.object({
   refreshToken: z.string().min(1, { message: 'refreshToken is required' }).max(256),
 });
+// Cookie transport: the body token is optional (the bs_rt cookie is used when it is absent)
+const optionalRefreshSchema = z.object({ refreshToken: refreshSchema.shape.refreshToken.optional() });
 
 const emailOnlySchema = z.object({ email: emailSchema }).strict();
 const tokenOnlySchema = z.object({ token: oneTimeTokenSchema }).strict();
@@ -62,6 +72,27 @@ const userStatusSchema = z.object({ isActive: z.boolean() }).strict();
 
 /** Client network for lockouts, and the client address for the staff network allowlist */
 const loginContext = (req: Request): LoginContext => ({ network: clientIpKey(req.ip), ip: req.ip });
+
+/**
+ * The refresh token of the request: from the body as always, or with cookie transport from the bs_rt cookie
+ * when the body has none. No token at all is then a 401 (a browser without a session), not a 400.
+ */
+function presentedRefreshToken(req: Request): string {
+  if (!wantsCookieTransport(req)) return refreshSchema.parse(req.body).refreshToken;
+  const token = optionalRefreshSchema.parse(req.body ?? {}).refreshToken ?? readSessionCookie(req);
+  if (!token) throw new UnauthorizedError('No active session');
+  return token;
+}
+
+/** With cookie transport, a request that ends in 401 (no/invalid/expired/reused session) also drops the cookie */
+async function clearingCookieOn401<T>(req: Request, res: Response, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (err: any) {
+    if (err?.statusCode === 401 && wantsCookieTransport(req)) clearSessionCookie(res);
+    throw err;
+  }
+}
 
 type Handler = (req: Request, res: Response) => Promise<void>;
 const wrap =
@@ -96,23 +127,24 @@ export class AuthController {
   public login = wrap(async (req, res) => {
     const validated = loginSchema.parse(req.body);
     const result = await this.authService.login(validated, loginContext(req));
-    res.status(200).json({ success: true, data: result });
+    const data = 'tokens' in result ? { user: result.user, tokens: issueTokens(req, res, result.tokens) } : result;
+    res.status(200).json({ success: true, data });
   });
 
   public loginMfa = wrap(async (req, res) => {
     const { challengeToken, code } = mfaLoginSchema.parse(req.body);
     const result = await this.authService.completeMfaLogin(challengeToken, code, loginContext(req));
-    res.status(200).json({ success: true, data: result });
+    res.status(200).json({ success: true, data: { user: result.user, tokens: issueTokens(req, res, result.tokens) } });
   });
 
   public refresh = wrap(async (req, res) => {
-    const validated = refreshSchema.parse(req.body);
-    const tokens = await this.authService.refreshToken(validated.refreshToken);
-    res.status(200).json({ success: true, data: tokens });
+    // A concurrent refresh (409) keeps the cookie: the other request has just set the newest one
+    const tokens = await clearingCookieOn401(req, res, () => this.authService.refreshToken(presentedRefreshToken(req)));
+    res.status(200).json({ success: true, data: issueTokens(req, res, tokens) });
   });
 
   public logout = wrap(async (req, res) => {
-    const validated = refreshSchema.parse(req.body);
+    const refreshToken = await clearingCookieOn401(req, res, async () => presentedRefreshToken(req));
     // The access token is optional on logout; if present and valid it is revoked immediately
     let accessToken = null;
     const bearer = readBearerToken(req);
@@ -123,7 +155,8 @@ export class AuthController {
         accessToken = null;
       }
     }
-    await this.authService.logout(validated.refreshToken, accessToken);
+    await this.authService.logout(refreshToken, accessToken);
+    if (wantsCookieTransport(req)) clearSessionCookie(res);
     res.status(200).json({ success: true, message: 'Successfully logged out and session revoked' });
   });
 
@@ -136,7 +169,7 @@ export class AuthController {
   public mfaEnable = wrap(async (req, res) => {
     const { code, enrolmentToken } = mfaEnableSchema.parse(req.body);
     const tokens = await this.authService.enableMfa(getAuthenticatedUser(req), code, enrolmentToken);
-    res.status(200).json({ success: true, data: { tokens } });
+    res.status(200).json({ success: true, data: { tokens: issueTokens(req, res, tokens) } });
   });
 
   public mfaStepUp = wrap(async (req, res) => {
@@ -146,8 +179,8 @@ export class AuthController {
 
   public activateStaff = wrap(async (req, res) => {
     const { token, password } = activateSchema.parse(req.body);
-    const result = await this.authService.activateStaff(token, password);
-    res.status(200).json({ success: true, data: result });
+    const { tokens, enrolmentToken } = await this.authService.activateStaff(token, password);
+    res.status(200).json({ success: true, data: { tokens: issueTokens(req, res, tokens), enrolmentToken } });
   });
 
   public mfaDisable = wrap(async (req, res) => {
@@ -173,7 +206,7 @@ export class AuthController {
   public changePassword = wrap(async (req, res) => {
     const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
     const tokens = await this.authService.changePassword(getAuthenticatedUser(req), currentPassword, newPassword, loginContext(req));
-    res.status(200).json({ success: true, data: { tokens } });
+    res.status(200).json({ success: true, data: { tokens: issueTokens(req, res, tokens) } });
   });
 
   public me = wrap(async (req, res) => {

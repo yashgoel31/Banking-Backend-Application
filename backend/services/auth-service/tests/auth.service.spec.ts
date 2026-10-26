@@ -1023,3 +1023,157 @@ describe('Auth HTTP routes', () => {
     expect((await request(app).post('/api/v1/auth/password/forgot').send({ email: 'whoever@bank.com' })).status).toBe(202);
   });
 });
+
+describe('Cookie session transport (X-Session-Transport: cookie)', () => {
+  const COOKIE = { 'X-Session-Transport': 'cookie' };
+  let prisma: any;
+  let tokenState: InMemoryTokenStateStore;
+  let app: express.Express;
+  let passwordHash: string;
+
+  beforeAll(async () => {
+    passwordHash = await PasswordService.hash('Password1234');
+  });
+
+  beforeEach(() => {
+    prisma = buildMockPrisma();
+    tokenState = new InMemoryTokenStateStore();
+    app = createApp(prisma, { tokenState, security: new InMemoryAuthSecurityStore(), mailer: new ConsoleMailer() }).app;
+    prisma.user.findUnique.mockResolvedValue(activeUser({ email: 'carol@example.com', passwordHash }));
+  });
+
+  afterEach(() => {
+    delete process.env.AUTH_COOKIE_SECURE;
+  });
+
+  const setCookies = (res: request.Response): string[] => ([] as string[]).concat(res.headers['set-cookie'] ?? []);
+  const sessionCookie = (res: request.Response) => setCookies(res).find((c) => c.startsWith('bs_rt='));
+  const attributes = (cookie: string) => cookie.split(';').map((p) => p.trim()).slice(1);
+  const login = (headers: Record<string, string> = COOKIE) =>
+    request(app).post('/api/v1/auth/login').set(headers).send({ email: 'carol@example.com', password: 'Password1234' });
+  /** The refresh token the server stored for the latest session */
+  const rotatingRecord = (overrides: Partial<any> = {}) => {
+    const data = prisma.refreshToken.create.mock.calls.at(-1)[0].data;
+    const record = { id: 'rt1', userId: 'u1', isRevoked: false, mfaAuthenticated: false, user: activeUser(), ...data, ...overrides };
+    prisma.refreshToken.findUnique.mockResolvedValue(record);
+    prisma.refreshToken.findUniqueOrThrow.mockResolvedValue(record);
+    return record;
+  };
+
+  it('login sets the refresh token as an HttpOnly, Secure, SameSite=Strict cookie scoped to /api/v1/auth and drops it from the body', async () => {
+    const res = await login();
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body.data.tokens).sort()).toEqual(['accessToken', 'expiresInSeconds']);
+    expect(res.body.data.user).toEqual({ id: 'u1', email: 'carol@example.com', role: 'CUSTOMER' });
+    const cookie = sessionCookie(res)!;
+    const raw = /^bs_rt=([^;]+)/.exec(cookie)![1];
+    expect(prisma.refreshToken.create.mock.calls[0][0].data.tokenHash).toBe(sha256(raw));
+    expect(attributes(cookie)).toEqual(expect.arrayContaining(['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth']));
+    // Lives exactly as long as the refresh token: the refresh TTL (7 days), capped by the absolute session lifetime
+    const maxAge = Number(attributes(cookie).find((a) => a.startsWith('Max-Age='))!.split('=')[1]);
+    expect(Math.abs(maxAge - 7 * 86400)).toBeLessThan(5);
+  });
+
+  it('without the header nothing changes: refresh token in the body, no cookie', async () => {
+    const res = await login({});
+    expect(res.body.data.tokens).toEqual({ accessToken: expect.any(String), refreshToken: expect.any(String), expiresInSeconds: expect.any(Number) });
+    expect(setCookies(res)).toEqual([]);
+    // ...and a refresh without a token is still a validation error
+    expect((await request(app).post('/api/v1/auth/refresh').send({})).status).toBe(400);
+  });
+
+  it('AUTH_COOKIE_SECURE=false drops only the Secure attribute', async () => {
+    process.env.AUTH_COOKIE_SECURE = 'false';
+    const cookie = sessionCookie(await login())!;
+    expect(attributes(cookie)).not.toContain('Secure');
+    expect(attributes(cookie)).toEqual(expect.arrayContaining(['HttpOnly', 'SameSite=Strict', 'Path=/api/v1/auth']));
+  });
+
+  it('refresh reads the cookie, rotates it, and returns only the access token', async () => {
+    const first = /^bs_rt=([^;]+)/.exec(sessionCookie(await login())!)![1];
+    rotatingRecord();
+    const res = await request(app).post('/api/v1/auth/refresh').set(COOKIE).set('Cookie', `other=1; bs_rt=${first}`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, data: { accessToken: expect.any(String), expiresInSeconds: expect.any(Number) } });
+    expect(prisma.refreshToken.findUnique.mock.calls.at(-1)[0].where.tokenHash).toBe(sha256(first));
+    const next = /^bs_rt=([^;]+)/.exec(sessionCookie(res)!)![1];
+    expect(next).not.toBe(first);
+    expect(prisma.refreshToken.create.mock.calls.at(-1)[0].data.tokenHash).toBe(sha256(next));
+  });
+
+  it('a body refreshToken still wins over the cookie in cookie mode', async () => {
+    await login();
+    rotatingRecord();
+    await request(app).post('/api/v1/auth/refresh').set(COOKIE).set('Cookie', 'bs_rt=from-cookie').send({ refreshToken: 'from-body' });
+    expect(prisma.refreshToken.findUnique.mock.calls.at(-1)[0].where.tokenHash).toBe(sha256('from-body'));
+  });
+
+  it('no session anywhere is a clean 401 UNAUTHORIZED (not 400) for refresh and logout, and clears the cookie', async () => {
+    for (const path of ['/api/v1/auth/refresh', '/api/v1/auth/logout']) {
+      const res = await request(app).post(path).set(COOKIE).send({});
+      expect([path, res.status, res.body.error.code]).toEqual([path, 401, 'UNAUTHORIZED']);
+      expect(attributes(sessionCookie(res)!)).toContain('Max-Age=0');
+    }
+  });
+
+  it('reuse, invalid, expired and disabled refreshes clear the cookie; a concurrent refresh (409) keeps it', async () => {
+    await login();
+    const outcomes: Array<[string, Partial<any> | null]> = [
+      ['reuse', { isRevoked: true }],
+      ['expired', { familyExpiresAt: new Date(Date.now() - 1) }],
+      ['disabled', { user: activeUser({ isActive: false }) }],
+      ['invalid', null],
+    ];
+    for (const [name, overrides] of outcomes) {
+      if (overrides) rotatingRecord(overrides);
+      else prisma.refreshToken.findUnique.mockResolvedValue(null);
+      const res = await request(app).post('/api/v1/auth/refresh').set(COOKIE).set('Cookie', 'bs_rt=abc').send({});
+      expect([name, res.status]).toEqual([name, 401]);
+      const cleared = sessionCookie(res)!;
+      expect([name, attributes(cleared)]).toEqual([name, expect.arrayContaining(['Max-Age=0', 'HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth'])]);
+    }
+    rotatingRecord({ isRevoked: true, rotatedAt: new Date() });
+    const twin = await request(app).post('/api/v1/auth/refresh').set(COOKIE).set('Cookie', 'bs_rt=abc').send({});
+    expect(twin.status).toBe(409);
+    expect(sessionCookie(twin)).toBeUndefined();
+  });
+
+  it('logout revokes the session from the cookie and clears it', async () => {
+    const raw = /^bs_rt=([^;]+)/.exec(sessionCookie(await login())!)![1];
+    prisma.refreshToken.findUnique.mockResolvedValue({ id: 'rt1', userId: 'u1', familyId: 'fam-c' });
+    const res = await request(app).post('/api/v1/auth/logout').set(COOKIE).set('Cookie', `bs_rt=${raw}`).send({});
+    expect(res.status).toBe(200);
+    expect(prisma.refreshToken.findUnique.mock.calls.at(-1)[0].where.tokenHash).toBe(sha256(raw));
+    expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({ where: { familyId: 'fam-c' }, data: { isRevoked: true } });
+    expect(attributes(sessionCookie(res)!)).toContain('Max-Age=0');
+  });
+
+  it('password change, MFA enable and staff activation also move the refresh token into the cookie', async () => {
+    const access = signAccessToken({ sub: 'u1', email: 'carol@example.com', role: 'CUSTOMER', tokenVersion: 0, mfa: false, sessionId: 'fam-1' });
+    prisma.user.update.mockImplementation(({ data }: any) => activeUser({ ...data, email: 'carol@example.com', tokenVersion: 1 }));
+    prisma.user.findUniqueOrThrow.mockResolvedValue(activeUser({ email: 'carol@example.com', tokenVersion: 1 }));
+    const change = await request(app).post('/api/v1/auth/password/change').set(COOKIE).set('Authorization', `Bearer ${access}`).send({ currentPassword: 'Password1234', newPassword: 'NewPassword123' });
+    expect(change.status).toBe(200);
+    expect(Object.keys(change.body.data.tokens).sort()).toEqual(['accessToken', 'expiresInSeconds']);
+    expect(sessionCookie(change)).toBeDefined();
+
+    const secret = generateTotpSecret();
+    prisma.user.findUnique.mockResolvedValue(activeUser({ mfaPendingSecretEnc: encryptSecret(secret, 'u1') }));
+    prisma.refreshToken.findFirst.mockResolvedValue({ id: 'rt-current', familyId: 'fam-1', familyExpiresAt: new Date(Date.now() + 86400_000) });
+    // The password change bumped the token version: continue with the new session's access token
+    const enable = await request(app).post('/api/v1/auth/mfa/enable').set(COOKIE).set('Authorization', `Bearer ${change.body.data.tokens.accessToken}`).send({ code: totpAt(secret, currentStep()) });
+    expect(enable.status).toBe(200);
+    expect(Object.keys(enable.body.data.tokens).sort()).toEqual(['accessToken', 'expiresInSeconds']);
+    // Capped by the session's absolute lifetime (one day left here), not a fresh refresh TTL
+    expect(Math.abs(Number(/Max-Age=(\d+)/.exec(sessionCookie(enable)!)![1]) - 86400)).toBeLessThan(5);
+
+    prisma.enrolmentToken.findUnique.mockResolvedValue({ id: 'e1', userId: 'u1', purpose: 'ACTIVATE', usedAt: null, expiresAt: new Date(Date.now() + 60_000) });
+    prisma.user.update.mockImplementation(({ data }: any) => activeUser({ ...data, role: 'TELLER', tokenVersion: 1 }));
+    prisma.user.findUniqueOrThrow.mockResolvedValue(activeUser({ role: 'TELLER', tokenVersion: 1 }));
+    const activate = await request(app).post('/api/v1/auth/staff/activate').set(COOKIE).send({ token: 'a'.repeat(43), password: 'ChosenPassword1' });
+    expect(activate.status).toBe(200);
+    expect(Object.keys(activate.body.data).sort()).toEqual(['enrolmentToken', 'tokens']);
+    expect(Object.keys(activate.body.data.tokens).sort()).toEqual(['accessToken', 'expiresInSeconds']);
+    expect(sessionCookie(activate)).toBeDefined();
+  });
+});

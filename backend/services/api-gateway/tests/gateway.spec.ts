@@ -92,6 +92,15 @@ describe('API Gateway', () => {
     expect(denied.headers['access-control-allow-origin']).toBeUndefined();
   });
 
+  it('CORS allows the X-Session-Transport header (cookie session transport opt-in)', async () => {
+    const preflight = await request(gateway())
+      .options('/api/v1/transactions/transfer')
+      .set('Origin', 'https://app.example.com')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type,x-session-transport');
+    expect(preflight.headers['access-control-allow-headers'].toLowerCase().split(',')).toContain('x-session-transport');
+  });
+
   it('STAFF NETWORK: staff-only paths are refused from outside STAFF_ALLOWED_CIDRS', async () => {
     process.env.STAFF_ALLOWED_CIDRS = '10.20.0.0/16';
     try {

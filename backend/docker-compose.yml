@@ -269,6 +269,8 @@ services:
       JWT_REFRESH_EXPIRATION_DAYS: ${JWT_REFRESH_EXPIRATION_DAYS:-7}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?set MFA_ENCRYPTION_KEY in .env}
       APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL in .env}
+      # Secure attribute of the browser session cookie (bs_rt); keep it on
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
       EMAIL_TRANSPORT: smtp
       SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST in .env}
       SMTP_PORT: ${SMTP_PORT:-587}
