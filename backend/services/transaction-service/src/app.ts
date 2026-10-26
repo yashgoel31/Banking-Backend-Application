@@ -25,6 +25,7 @@ import { LedgerService } from './services/ledger.service';
 import { TellerService } from './services/teller.service';
 import { BeneficiaryService } from './services/beneficiary.service';
 import { IdempotencyService } from './services/idempotency.service';
+import { defaultLedgerPolicy } from './services/ledger-core';
 import { TransactionController } from './controllers/transaction.controller';
 import { createTransactionRouter } from './routes/transaction.routes';
 import { createInternalRouter } from './routes/internal.routes';
@@ -39,13 +40,14 @@ export function createApp(prisma: PrismaClient, deps: TransactionAppDeps) {
   getInternalToken('LEDGER_INTERNAL_TOKEN');
   const app = createBaseApp();
 
-  // Services initialization
-  const ledgerService = new LedgerService(prisma);
+  // Services initialization (an invalid policy setting stops the service here, at startup)
+  const policy = defaultLedgerPolicy();
+  const ledgerService = new LedgerService(prisma, policy);
   const idempotencyService = new IdempotencyService(prisma);
 
   // Controller & Router
-  const tellerService = new TellerService(prisma);
-  const controller = new TransactionController(ledgerService, tellerService, new BeneficiaryService(prisma), idempotencyService);
+  const tellerService = new TellerService(prisma, policy);
+  const controller = new TransactionController(ledgerService, tellerService, new BeneficiaryService(prisma, policy), idempotencyService);
   app.use('/api/v1/transactions', createTransactionRouter(controller, createAuthenticate(deps.tokenState)));
   app.use('/internal/v1', createInternalRouter(ledgerService));
 

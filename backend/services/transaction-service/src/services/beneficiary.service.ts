@@ -2,8 +2,6 @@ import { PrismaClient } from '../../generated/client';
 import { AuthenticatedUser, ConflictError, HttpError, NotFoundError, RateLimitExceededError } from '@banksphere/common';
 import { LedgerPolicy, audit, defaultLedgerPolicy, hasStepUp } from './ledger-core';
 
-const MAX_NEW_BENEFICIARIES_PER_DAY = Number(process.env.MAX_NEW_BENEFICIARIES_PER_DAY || 10);
-
 /**
  * Registered payees. A customer can only transfer to their own accounts or to an active beneficiary.
  * A new beneficiary activates after a cooling-off period, or immediately when added from an
@@ -20,7 +18,7 @@ export class BeneficiaryService {
     const addedToday = await this.prisma.beneficiary.count({
       where: { customerId: customer.id, createdAt: { gte: new Date(Date.now() - 24 * 3600_000) } },
     });
-    if (addedToday >= MAX_NEW_BENEFICIARIES_PER_DAY) {
+    if (addedToday >= this.policy.maxNewBeneficiariesPerDay) {
       throw new RateLimitExceededError('Too many beneficiaries added today');
     }
 
