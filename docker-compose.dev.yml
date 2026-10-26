@@ -1,0 +1,9 @@
+# Local development overlay for the full stack:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+# Adds Mailpit (captured emails: http://localhost:8025), publishes Postgres/Redis/Kafka on 127.0.0.1 for
+# native debugging, relaxes per-IP limits so the test suites can be re-run, and lets a just-enrolled
+# authenticator approve high-value actions (production waits 24 hours). Never use it in production.
+
+include:
+  - path: backend/docker-compose.dev.yml
+    env_file: backend/.env

@@ -1,0 +1,40 @@
+# BankSphere — full stack (web app + API + data stores) in one command.
+#
+#   node backend/scripts/setup-dev-env.mjs        # first time: random secrets in backend/.env
+#   docker compose up -d --build                  # production-like stack, web app on http://localhost:8080
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build   # + Mailpit and relaxed limits
+#
+# The backend's own compose file is included unchanged; docker-compose.web.yml adapts it to sit behind the web
+# app: the gateway is no longer published (only the web container is), and it trusts exactly one proxy hop —
+# the web container's nginx, which overwrites X-Forwarded-For with the real client address.
+
+name: banksphere
+
+include:
+  - path:
+      - backend/docker-compose.yml
+      - backend/docker-compose.web.yml
+    env_file: backend/.env
+
+services:
+  web:
+    build: { context: ./frontend }
+    image: banksphere-web:latest
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /etc/nginx/conf.d
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    networks: [edge]
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    environment:
+      API_UPSTREAM: api-gateway:8000
+      # Set to your load balancer's CIDR if one terminates TLS in front of this container
+      TRUSTED_PROXY_CIDR: ${WEB_TRUSTED_PROXY_CIDR:-127.0.0.1/32}
+    depends_on:
+      api-gateway: { condition: service_healthy }
