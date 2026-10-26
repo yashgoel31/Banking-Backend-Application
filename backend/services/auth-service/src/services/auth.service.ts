@@ -359,21 +359,7 @@ export class AuthService {
 
   public async login(dto: LoginDTO, ctx: LoginContext): Promise<AuthResponse | MfaChallengeResponse> {
     const email = normaliseEmail(dto.email);
-
-    // Counted before the password check, so parallel bursts can't exceed the limit
-    const attempt = await this.security.beginLoginAttempt(email, ctx.network);
-    if (attempt.locked) {
-      if (attempt.stepUpRequired) {
-        logger.warn({ alert: 'LOGIN_GLOBAL_LOCKOUT' }, 'Distributed login failures on one account; unknown networks blocked');
-        throw new HttpError(
-          429,
-          'LOGIN_STEP_UP_REQUIRED',
-          'Too many failed sign-in attempts on this account. Reset your password by email to continue.'
-        );
-      }
-      // Same answer for existing and non-existing emails; counters exist for any address tried
-      throw new RateLimitExceededError('Too many failed sign-in attempts. Try again later or reset your password.');
-    }
+    await this.beginPasswordAttempt(email, ctx.network);
 
     const user = await this.prisma.user.findUnique({ where: { email } });
 
@@ -417,11 +403,6 @@ export class AuthService {
     if (!challenge) throw invalid();
     const { userId } = challenge;
 
-    if (await this.security.isMfaLocked(userId)) {
-      await this.security.deleteMfaChallenge(challengeToken);
-      throw new HttpError(429, 'MFA_TEMPORARILY_LOCKED', 'Too many failed verification codes. Try again later.');
-    }
-
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || !user.isActive || !user.mfaEnabled || !user.mfaSecretEnc) {
       await this.security.deleteMfaChallenge(challengeToken);
@@ -430,24 +411,39 @@ export class AuthService {
     // The challenge proves the password; checked before the code so TOTP can't be tried off-network
     this.assertStaffNetwork(user, ctx);
 
-    const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
-    if (step === null || !(await this.consumeTotpStep(user.id, step))) {
-      const failures = await this.security.recordMfaFailure(user.id);
-      if (await this.security.isMfaLocked(user.id)) {
-        await this.security.deleteMfaChallenge(challengeToken);
-        if (failures === Number(process.env.MFA_MAX_FAILURES_PER_HOUR || 10)) {
-          logger.warn({ userId: user.id, alert: 'MFA_BRUTE_FORCE' }, 'TOTP sign-in paused after repeated failures');
-          this.runInBackground('send MFA locked email', () => this.mailer.send(mfaLockedEmail(user.email)).then(() => {}));
-        }
-      }
-      throw invalid();
-    }
+    const discardChallenge = () => this.security.deleteMfaChallenge(challengeToken);
+    if (!(await this.checkTotp(user, user.mfaSecretEnc, code, discardChallenge))) throw invalid();
 
-    await this.security.deleteMfaChallenge(challengeToken);
-    await this.security.clearMfaFailures(user.id);
+    await discardChallenge();
     // Bound to the token version at password time: a reset since then kills this half-finished login
     const tokens = await this.startSession(user, true, challenge.tokenVersion, true);
     return { user: { id: user.id, email: user.email, role: user.role }, tokens };
+  }
+
+  /**
+   * Checks a TOTP code within the user's failure budget, shared by sign-in, step-up and MFA disable. One
+   * attempt is reserved BEFORE the code is verified, so concurrent guesses can't all pass a "not locked yet"
+   * check; a correct code clears the budget, a wrong or replayed one keeps its reservation as a failure.
+   * Returns false for a wrong code; throws 429 MFA_TEMPORARILY_LOCKED once the budget is spent.
+   * `onLocked` runs when the budget is (or has just become) exhausted, e.g. to discard a login challenge.
+   */
+  private async checkTotp(user: User, secretEnc: string, code: string, onLocked?: () => Promise<void>): Promise<boolean> {
+    const reservation = await this.security.reserveMfaAttempt(user.id);
+    if (!reservation.allowed) {
+      await onLocked?.();
+      throw new HttpError(429, 'MFA_TEMPORARILY_LOCKED', 'Too many failed verification codes. Try again later.');
+    }
+    const step = verifyTotp(decryptSecret(secretEnc, user.id), code);
+    if (step !== null && (await this.consumeTotpStep(user.id, step))) {
+      await this.security.clearMfaFailures(user.id);
+      return true;
+    }
+    if (reservation.last) {
+      await onLocked?.();
+      logger.warn({ userId: user.id, alert: 'MFA_BRUTE_FORCE' }, 'TOTP paused after repeated failures');
+      this.runInBackground('send MFA locked email', () => this.mailer.send(mfaLockedEmail(user.email)).then(() => {}));
+    }
+    return false;
   }
 
   /** Atomically records the last used TOTP step; false if this (or a later) step was already used */
@@ -537,21 +533,46 @@ export class AuthService {
   // MFA enrolment (re-authentication required; staff also need a one-time enrolment token)
   // ---------------------------------------------------------------------------
 
-  private async reauthenticate(user: User, password: string): Promise<void> {
+  /**
+   * Password re-check inside an authenticated session. Counted like a sign-in attempt (same per-account and
+   * per-network lockout, counted before the check), so a stolen session can't be used to guess the password.
+   * A wrong password is 403 INVALID_PASSWORD, never 401: clients treat a 401 on an authenticated request as
+   * an expired session and would sign the user out over a typo.
+   */
+  private async reauthenticate(user: User, password: string, ctx: LoginContext, message = 'Password is incorrect'): Promise<void> {
+    await this.beginPasswordAttempt(user.email, ctx.network);
     if (!(await PasswordService.verify(user.passwordHash, password))) {
-      throw new UnauthorizedError('Password is incorrect');
+      throw new HttpError(403, 'INVALID_PASSWORD', message);
     }
+    await this.security.loginSucceeded(user.email, ctx.network);
+  }
+
+  /** Counts a password attempt BEFORE it is checked (atomic, so bursts can't exceed the limit); throws while locked */
+  private async beginPasswordAttempt(email: string, network: string): Promise<void> {
+    const attempt = await this.security.beginLoginAttempt(email, network);
+    if (!attempt.locked) return;
+    if (attempt.stepUpRequired) {
+      logger.warn({ alert: 'LOGIN_GLOBAL_LOCKOUT' }, 'Distributed login failures on one account; unknown networks blocked');
+      throw new HttpError(
+        429,
+        'LOGIN_STEP_UP_REQUIRED',
+        'Too many failed sign-in attempts on this account. Reset your password by email to continue.'
+      );
+    }
+    // Same answer for existing and non-existing emails; counters exist for any address tried
+    throw new RateLimitExceededError('Too many failed sign-in attempts. Try again later or reset your password.');
   }
 
   /** Starts (or restarts) enrolment: returns a new secret to load into an authenticator app */
   public async beginMfaSetup(
     actor: AuthenticatedUser,
     password: string,
-    enrolmentToken?: string
+    enrolmentToken: string | undefined,
+    ctx: LoginContext
   ): Promise<{ secret: string; otpauthUri: string }> {
     const user = await this.requireActiveUser(actor.id);
     if (user.mfaEnabled) throw new ConflictError('MFA is already enabled for this account');
-    await this.reauthenticate(user, password);
+    await this.reauthenticate(user, password, ctx);
     if (isStaffRole(user.role)) await this.assertEnrolmentTokenValid(enrolmentToken, user.id);
 
     const secret = generateTotpSecret();
@@ -628,15 +649,9 @@ export class AuthService {
     if (!actor.mfa || !actor.sessionId || !user.mfaEnabled || !user.mfaSecretEnc) {
       throw new HttpError(403, 'MFA_REQUIRED', 'Sign in with two-factor authentication first');
     }
-    if (await this.security.isMfaLocked(user.id)) {
-      throw new HttpError(429, 'MFA_TEMPORARILY_LOCKED', 'Too many failed verification codes. Try again later.');
-    }
-    const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
-    if (step === null || !(await this.consumeTotpStep(user.id, step))) {
-      await this.security.recordMfaFailure(user.id);
+    if (!(await this.checkTotp(user, user.mfaSecretEnc, code))) {
       throw new HttpError(400, 'INVALID_MFA_CODE', 'The verification code is not valid');
     }
-    await this.security.clearMfaFailures(user.id);
     const session = await this.prisma.refreshToken.findFirst({ where: { userId: user.id, familyId: actor.sessionId, isRevoked: false } });
     if (!session) throw new UnauthorizedError('Your session is no longer valid');
     await this.audit(this.prisma, user.id, 'MFA_STEP_UP', user.id);
@@ -647,15 +662,15 @@ export class AuthService {
    * Customers may turn MFA off with their password and a current code. Staff cannot: MFA is
    * mandatory for them and only a four-eyes administrative reset can clear it.
    */
-  public async disableMfa(actor: AuthenticatedUser, password: string, code: string): Promise<void> {
+  public async disableMfa(actor: AuthenticatedUser, password: string, code: string, ctx: LoginContext): Promise<void> {
     const user = await this.requireActiveUser(actor.id);
     if (isStaffRole(user.role)) {
       throw new ForbiddenError('MFA is mandatory for staff accounts');
     }
     if (!user.mfaEnabled || !user.mfaSecretEnc) throw new ConflictError('MFA is not enabled');
-    await this.reauthenticate(user, password);
-    const step = verifyTotp(decryptSecret(user.mfaSecretEnc, user.id), code);
-    if (step === null || !(await this.consumeTotpStep(user.id, step))) {
+    await this.reauthenticate(user, password, ctx);
+    // Same TOTP failure budget as sign-in and step-up
+    if (!(await this.checkTotp(user, user.mfaSecretEnc, code))) {
       throw new HttpError(400, 'INVALID_MFA_CODE', 'The verification code is not valid');
     }
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -793,15 +808,14 @@ export class AuthService {
   public async changePassword(
     actor: AuthenticatedUser,
     currentPassword: string,
-    newPassword: string
+    newPassword: string,
+    ctx: LoginContext
   ): Promise<GeneratedTokens> {
     const existing = await this.prisma.user.findUnique({ where: { id: actor.id } });
     if (!existing || !existing.isActive) {
       throw new UnauthorizedError();
     }
-    if (!(await PasswordService.verify(existing.passwordHash, currentPassword))) {
-      throw new UnauthorizedError('Current password is incorrect');
-    }
+    await this.reauthenticate(existing, currentPassword, ctx, 'Current password is incorrect');
     if (await PasswordService.verify(existing.passwordHash, newPassword)) {
       throw new HttpError(400, 'PASSWORD_REUSED', 'The new password must be different from the current one');
     }

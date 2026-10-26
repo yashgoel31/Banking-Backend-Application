@@ -34,6 +34,8 @@ import { createApp } from '../src/app';
 const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 const tokenFromEmail = (text: string) => decodeURIComponent(/#token=([A-Za-z0-9_%-]+)/.exec(text)![1]);
 const NET = { network: '203.0.113.7', ip: '203.0.113.7' };
+// Re-authentication failures inside a session: never 401, which clients read as an expired session
+const WRONG_PASSWORD = { statusCode: 403, errorCode: 'INVALID_PASSWORD' };
 
 function buildMockPrisma() {
   const prisma: any = {
@@ -314,9 +316,9 @@ describe('AuthService', () => {
     it('enrolment re-authenticates, encrypts the secret, revokes other sessions and upgrades the current one', async () => {
       const passwordHash = await PasswordService.hash('Password1234');
       prisma.user.findUnique.mockResolvedValue(activeUser({ passwordHash }));
-      await expect(authService.beginMfaSetup(customer, 'WrongPassword1')).rejects.toThrow(UnauthorizedError);
+      await expect(authService.beginMfaSetup(customer, 'WrongPassword1', undefined, NET)).rejects.toMatchObject({ statusCode: 403, errorCode: 'INVALID_PASSWORD' });
 
-      const { secret, otpauthUri } = await authService.beginMfaSetup(customer, 'Password1234');
+      const { secret, otpauthUri } = await authService.beginMfaSetup(customer, 'Password1234', undefined, NET);
       expect(otpauthUri).toMatch(/^otpauth:\/\/totp\//);
       const pendingEnc = prisma.user.update.mock.calls[0][0].data.mfaPendingSecretEnc;
       expect(pendingEnc).not.toContain(secret); // stored encrypted
@@ -343,19 +345,19 @@ describe('AuthService', () => {
       const teller = { id: 'u1', email: 't@bank.com', role: 'TELLER' as const, sessionId: 'fam-1' };
       prisma.user.findUnique.mockResolvedValue(activeUser({ role: 'TELLER', passwordHash }));
       prisma.enrolmentToken.findUnique.mockResolvedValue(null);
-      await expect(authService.beginMfaSetup(teller, 'Password1234')).rejects.toThrow(HttpError);
-      await expect(authService.beginMfaSetup(teller, 'Password1234', 'bogus-token')).rejects.toThrow('enrolment token');
+      await expect(authService.beginMfaSetup(teller, 'Password1234', undefined, NET)).rejects.toThrow(HttpError);
+      await expect(authService.beginMfaSetup(teller, 'Password1234', 'bogus-token', NET)).rejects.toThrow('enrolment token');
 
       prisma.enrolmentToken.findUnique.mockResolvedValue({
         id: 'e1', userId: 'u1', purpose: 'MFA_ENROL', usedAt: null, expiresAt: new Date(Date.now() + 60_000),
       });
-      await expect(authService.beginMfaSetup(teller, 'Password1234', 'raw-enrolment-token')).resolves.toHaveProperty('secret');
+      await expect(authService.beginMfaSetup(teller, 'Password1234', 'raw-enrolment-token', NET)).resolves.toHaveProperty('secret');
       expect(prisma.enrolmentToken.findUnique.mock.calls.at(-1)[0].where.tokenHash).toBe(sha256('raw-enrolment-token'));
     });
 
     it('staff cannot disable their own MFA; a staff MFA reset needs a four-eyes request', async () => {
       prisma.user.findUnique.mockResolvedValue(activeUser({ role: 'BANK_ADMIN', mfaEnabled: true }));
-      await expect(authService.disableMfa({ id: 'u1', email: 'a', role: 'BANK_ADMIN' }, 'x', '123456')).rejects.toThrow(ForbiddenError);
+      await expect(authService.disableMfa({ id: 'u1', email: 'a', role: 'BANK_ADMIN' }, 'x', '123456', NET)).rejects.toThrow(ForbiddenError);
       await expect(authService.adminResetCustomerMfa({ id: 'a2', email: 'b', role: 'BANK_ADMIN' }, 'u1')).rejects.toThrow('four-eyes');
     });
 
@@ -402,6 +404,69 @@ describe('AuthService', () => {
       const claims = verifyAccessToken(accessToken);
       expect(claims.sessionId).toBe('fam-1');
       expect(Math.abs(claims.stepUpAt! - Date.now() / 1000)).toBeLessThan(5);
+    });
+
+    it('MFA BUDGET RACE: concurrent wrong codes at sign-in cannot all slip past the per-user failure budget', async () => {
+      const secret = generateTotpSecret();
+      prisma.user.findUnique.mockResolvedValue(enrolledUser(secret));
+      const challenges = await Promise.all(Array.from({ length: 30 }, () => security.createMfaChallenge('u1', 0, 300)));
+      const results = await Promise.allSettled(challenges.map((c) => authService.completeMfaLogin(c, '000000', NET)));
+      const statuses = results.map((r: any) => r.reason?.statusCode);
+      // Only the budget (10) is ever checked against the secret; everything beyond it is refused unseen
+      expect(statuses.filter((s) => s === 401)).toHaveLength(10);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(20);
+      await authService.drainBackgroundTasks();
+      expect(mailer.sent.filter((m) => /verification codes|locked|paused/i.test(`${m.subject} ${m.text}`))).toHaveLength(1);
+    });
+
+    it('MFA BUDGET RACE: concurrent wrong step-up codes are bounded by the same budget', async () => {
+      const secret = generateTotpSecret();
+      prisma.user.findUnique.mockResolvedValue(enrolledUser(secret, { mfaEnabledAt: new Date(Date.now() - 86400_000 * 2) }));
+      const actor = { id: 'u1', email: 'alice@bank.com', role: 'CUSTOMER' as const, mfa: true, sessionId: 'fam-1' };
+      const results = await Promise.allSettled(Array.from({ length: 30 }, () => authService.stepUp(actor, '000000')));
+      const codes = results.map((r: any) => r.reason?.errorCode);
+      expect(codes.filter((c) => c === 'INVALID_MFA_CODE')).toHaveLength(10);
+      expect(codes.filter((c) => c === 'MFA_TEMPORARILY_LOCKED')).toHaveLength(20);
+    });
+
+    it('DISABLE MFA: wrong codes count towards the TOTP lock, which disable (and sign-in) then respect', async () => {
+      const secret = generateTotpSecret();
+      const passwordHash = await PasswordService.hash('Password1234');
+      prisma.user.findUnique.mockResolvedValue(enrolledUser(secret, { passwordHash }));
+      const actor = { id: 'u1', email: 'alice@bank.com', role: 'CUSTOMER' as const, mfa: true, sessionId: 'fam-1' };
+      for (let i = 0; i < 10; i++) {
+        await expect(authService.disableMfa(actor, 'Password1234', '000000', NET)).rejects.toMatchObject({ errorCode: 'INVALID_MFA_CODE' });
+      }
+      await expect(authService.disableMfa(actor, 'Password1234', totpAt(secret, currentStep()), NET)).rejects.toMatchObject({ errorCode: 'MFA_TEMPORARILY_LOCKED' });
+      const challenge = await security.createMfaChallenge('u1', 0, 300);
+      await expect(authService.completeMfaLogin(challenge, totpAt(secret, currentStep()), NET)).rejects.toMatchObject({ errorCode: 'MFA_TEMPORARILY_LOCKED' });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('RE-AUTHENTICATION: wrong passwords on password change, MFA setup and MFA disable count towards the sign-in lockout', async () => {
+      const passwordHash = await PasswordService.hash('Password1234');
+      const actor = { id: 'u1', email: 'alice@bank.com', role: 'CUSTOMER' as const, mfa: true, sessionId: 'fam-1' };
+      prisma.user.findUnique.mockResolvedValue(activeUser({ passwordHash }));
+      await expect(authService.changePassword(actor, 'Wrong1234567', 'NewPassword123', NET)).rejects.toMatchObject(WRONG_PASSWORD);
+      await expect(authService.changePassword(actor, 'Wrong1234568', 'NewPassword123', NET)).rejects.toMatchObject(WRONG_PASSWORD);
+      await expect(authService.beginMfaSetup(actor, 'Wrong1234569', undefined, NET)).rejects.toMatchObject(WRONG_PASSWORD);
+      await expect(authService.beginMfaSetup(actor, 'Wrong1234560', undefined, NET)).rejects.toMatchObject(WRONG_PASSWORD);
+      prisma.user.findUnique.mockResolvedValue(enrolledUser(generateTotpSecret(), { passwordHash }));
+      await expect(authService.disableMfa(actor, 'Wrong1234561', '123456', NET)).rejects.toMatchObject(WRONG_PASSWORD);
+
+      // Five failures from this network: locked, even with the right password, here and at sign-in
+      prisma.user.findUnique.mockResolvedValue(activeUser({ passwordHash }));
+      await expect(authService.changePassword(actor, 'Password1234', 'NewPassword123', NET)).rejects.toThrow(RateLimitExceededError);
+      await expect(authService.login({ email: 'alice@bank.com', password: 'Password1234' }, NET)).rejects.toThrow(RateLimitExceededError);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('RE-AUTHENTICATION: a correct password refunds the attempt', async () => {
+      const passwordHash = await PasswordService.hash('Password1234');
+      const actor = { id: 'u1', email: 'alice@bank.com', role: 'CUSTOMER' as const, sessionId: 'fam-1' };
+      prisma.user.findUnique.mockResolvedValue(activeUser({ passwordHash }));
+      for (let i = 0; i < 10; i++) await authService.beginMfaSetup(actor, 'Password1234', undefined, NET);
+      expect(((await authService.login({ email: 'alice@bank.com', password: 'Password1234' }, NET)) as any).tokens).toBeDefined();
     });
 
     it('a password reset kills a half-finished MFA login (the challenge is bound to the token version)', async () => {
@@ -814,11 +879,31 @@ describe('createAuthenticate', () => {
 });
 
 describe('Auth HTTP routes', () => {
-  const app = createApp(buildMockPrisma(), {
+  const prisma = buildMockPrisma();
+  const app = createApp(prisma, {
     tokenState: new InMemoryTokenStateStore(),
     security: new InMemoryAuthSecurityStore(),
     mailer: new ConsoleMailer(),
   }).app;
+
+  it('RE-AUTHENTICATION: a wrong password or code inside a session is never 401 (clients read 401 as "session expired")', async () => {
+    const passwordHash = await PasswordService.hash('Password1234');
+    const secret = generateTotpSecret();
+    prisma.user.findUnique.mockResolvedValue(activeUser({ id: 'u-9', email: 'nine@example.com', passwordHash }));
+    const token = signAccessToken({ sub: 'u-9', email: 'nine@example.com', role: 'CUSTOMER', tokenVersion: 0, mfa: true, sessionId: 's9' });
+    const auth = { Authorization: `Bearer ${token}` };
+    const outcome = (res: request.Response) => [res.status, res.body.error?.code];
+
+    expect(outcome(await request(app).post('/api/v1/auth/password/change').set(auth).send({ currentPassword: 'NotIt123456', newPassword: 'NewPassword123' }))).toEqual([403, 'INVALID_PASSWORD']);
+    expect(outcome(await request(app).post('/api/v1/auth/mfa/setup').set(auth).send({ password: 'NotIt123456' }))).toEqual([403, 'INVALID_PASSWORD']);
+
+    prisma.user.findUnique.mockResolvedValue(
+      activeUser({ id: 'u-9', email: 'nine@example.com', passwordHash, mfaEnabled: true, mfaSecretEnc: encryptSecret(secret, 'u-9'), mfaEnabledAt: new Date(Date.now() - 2 * 86400_000) })
+    );
+    expect(outcome(await request(app).post('/api/v1/auth/mfa/disable').set(auth).send({ password: 'NotIt123456', code: '000000' }))).toEqual([403, 'INVALID_PASSWORD']);
+    expect(outcome(await request(app).post('/api/v1/auth/mfa/disable').set(auth).send({ password: 'Password1234', code: '000000' }))).toEqual([400, 'INVALID_MFA_CODE']);
+    expect(outcome(await request(app).post('/api/v1/auth/mfa/step-up').set(auth).send({ code: '000000' }))).toEqual([400, 'INVALID_MFA_CODE']);
+  });
 
   it('rejects a registration payload that tries to set a role', async () => {
     const res = await request(app).post('/api/v1/auth/register').send({ email: 'mallory@bank.com', password: 'Password1234', role: 'BANK_ADMIN' });
