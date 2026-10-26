@@ -148,6 +148,20 @@ export class AuthService {
   public async register(dto: RegisterDTO): Promise<{ message: string }> {
     const email = normaliseEmail(dto.email);
     const passwordHash = await PasswordService.hash(dto.password);
+    const accepted = { message: `Registration received. ${ACCEPTED_MESSAGE} Please verify your email before signing in.` };
+
+    if (this.isStaffEmail(email)) {
+      // Staff accounts only come from a four-eyes request. Self-registering a staff address would squat a
+      // future staff email (and block its CREATE_STAFF), so it is answered like an existing account
+      logger.warn({ alert: 'STAFF_DOMAIN_SELF_REGISTRATION' }, 'Self-registration attempted with a staff-domain address');
+      this.runInBackground('send existing-account email', async () => {
+        const existing = await this.prisma.user.findUnique({ where: { email } });
+        if (existing && (await this.security.consumeEmailQuota('existing-account', email))) {
+          await this.mailer.send(existingAccountEmail(email, this.config.appBaseUrl));
+        }
+      });
+      return accepted;
+    }
 
     let created: User | null = null;
     try {
@@ -174,7 +188,7 @@ export class AuthService {
       });
     }
 
-    return { message: `Registration received. ${ACCEPTED_MESSAGE} Please verify your email before signing in.` };
+    return accepted;
   }
 
   public async verifyEmail(rawToken: string): Promise<void> {
@@ -236,9 +250,15 @@ export class AuthService {
 
   public assertStaffEmailAllowed(email: string): void {
     const domain = this.config.staffEmailDomain;
-    if (domain && !normaliseEmail(email).endsWith(`@${domain}`)) {
+    if (domain && !this.isStaffEmail(email)) {
       throw new HttpError(400, 'STAFF_EMAIL_DOMAIN', `Staff accounts must use an @${domain} address`);
     }
+  }
+
+  /** True for addresses in STAFF_EMAIL_DOMAIN (false when no staff domain is configured) */
+  private isStaffEmail(email: string): boolean {
+    const domain = this.config.staffEmailDomain;
+    return Boolean(domain) && normaliseEmail(email).endsWith(`@${domain}`);
   }
 
   /**
