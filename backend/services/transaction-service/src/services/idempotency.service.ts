@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { PrismaClient, Prisma } from '../../generated/client';
 import { IdempotencyConflictError, IdempotencyKeyReuseError } from '../errors';
+import { envNumber } from './ledger-core';
 
 export interface IdempotencyContext {
   userId: string;
@@ -28,7 +29,7 @@ type TxClient = Prisma.TransactionClient;
 export class IdempotencyService {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly ttlHours = Number(process.env.IDEMPOTENCY_TTL_HOURS || 24)
+    private readonly ttlHours = envNumber('IDEMPOTENCY_TTL_HOURS', 24, 1)
   ) {}
 
   /**

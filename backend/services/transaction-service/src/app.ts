@@ -24,7 +24,7 @@ import { LedgerService } from './services/ledger.service';
 import { TellerService } from './services/teller.service';
 import { BeneficiaryService } from './services/beneficiary.service';
 import { IdempotencyService } from './services/idempotency.service';
-import { defaultLedgerPolicy } from './services/ledger-core';
+import { defaultLedgerPolicy, envNumber } from './services/ledger-core';
 import { TransactionController } from './controllers/transaction.controller';
 import { createTransactionRouter } from './routes/transaction.routes';
 import { createInternalRouter } from './routes/internal.routes';
@@ -106,6 +106,9 @@ export function createApp(prisma: PrismaClient, deps: TransactionAppDeps) {
 }
 
 async function main(): Promise<void> {
+  // Read (and validated) before anything starts: a NaN interval would make setInterval fire every millisecond
+  const outboxPollMs = envNumber('OUTBOX_POLL_INTERVAL_MS', 2000, 100);
+  const reconcileIntervalMs = envNumber('RECONCILE_INTERVAL_MS', 10 * 60 * 1000, 1000);
   const prisma = new PrismaClient(prismaClientOptions());
   const redis = await connectRedis();
   const { app, idempotencyService, ledgerService, tellerService } = createApp(prisma, { tokenState: new RedisTokenStateStore(redis), redis });
@@ -114,14 +117,13 @@ async function main(): Promise<void> {
   // delivered once Kafka is configured, instead of being marked PUBLISHED and lost.
   const { publisher, kafka } = createEventPublisher(process.env.KAFKA_CLIENT_ID || 'transaction-service');
   const relay = publisher ? new OutboxRelay(prisma, publisher) : null;
-  relay?.start(Number(process.env.OUTBOX_POLL_INTERVAL_MS || 2000));
+  relay?.start(outboxPollMs);
 
   const purgeTimer = setInterval(() => {
     idempotencyService.purgeExpired().catch((err) => logger.error({ err }, 'Idempotency purge failed'));
     tellerService.expireStaleApprovals().catch((err) => logger.error({ err }, 'Cash approval expiry failed'));
   }, 60 * 60 * 1000);
   // Ledger invariant: balances must equal the net of their entries (alerts on mismatch)
-  const reconcileIntervalMs = Number(process.env.RECONCILE_INTERVAL_MS || 10 * 60 * 1000);
   // One replica at a time (lease): the full scan runs once per interval for the whole deployment
   const reconcile = () => ledgerService.runScheduledReconciliation(Math.ceil((reconcileIntervalMs * 2) / 1000));
   void reconcile();
