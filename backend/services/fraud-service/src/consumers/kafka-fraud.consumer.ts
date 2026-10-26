@@ -16,6 +16,7 @@ export class KafkaFraudConsumer {
    * account it arrived in (INBOUND), so mule accounts receiving bursts of funds are flagged too.
    */
   public start(): void {
+    // Retries are parked on fraud.transaction.completed.v1.retry, which only fraud-svc may write and read
     this.kafkaService.subscribe(this.groupId, ['transaction.completed.v1'], async (_topic: string, payload: any) => {
       const valid =
         typeof payload?.eventId === 'string' &&
@@ -43,6 +44,6 @@ export class KafkaFraudConsumer {
       for (const context of sides) {
         await this.fraudService.evaluateTransaction(context, payload.eventId);
       }
-    });
+    }, { retryNamespace: 'fraud' });
   }
 }

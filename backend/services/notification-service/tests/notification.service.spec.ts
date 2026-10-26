@@ -69,7 +69,9 @@ describe('NotificationService', () => {
   });
 
   it('PERMANENT failure (e.g. 550 rejected recipient) is logged DEAD_LETTER and sent to the DLQ', async () => {
-    mockEmailProvider.sendEmail.mockRejectedValue(Object.assign(new Error('550 mailbox unavailable'), { responseCode: 550 }));
+    mockEmailProvider.sendEmail.mockRejectedValue(
+      Object.assign(new Error('550 mailbox unavailable'), { code: 'EENVELOPE', responseCode: 550, command: 'RCPT TO' })
+    );
     await service.dispatchWithRetryAndDLQ('evt-9', 'x', { recipient: 'gone@b.com', subject: 's', body: 'b' });
     expect(mockEmailProvider.sendEmail).toHaveBeenCalledTimes(3);
     expect(mockPrisma.notificationLog.create.mock.calls[0][0].data.status).toBe(NotificationStatus.DEAD_LETTER);
