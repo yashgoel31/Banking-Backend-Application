@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import Redis from 'ioredis';
 import { PrismaClient } from '../generated/client';
 import {
+  assertNoPlaceholders,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -125,6 +126,7 @@ export function createApp(prisma: PrismaClient, deps: AuthAppDeps) {
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['DATABASE_URL', 'REDIS_URL', 'RATE_LIMIT_REDIS_URL', 'KAFKA_PASSWORD', 'JWT_SIGNING_KEY', 'JWT_SIGNING_KEY_ID', 'JWT_VERIFY_KEYS', 'MFA_ENCRYPTION_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD']);
   if (process.env.NODE_ENV === 'production' && !process.env.STAFF_EMAIL_DOMAIN) {
     throw new Error('STAFF_EMAIL_DOMAIN must be set in production: staff accounts must use the corporate mail domain');
   }

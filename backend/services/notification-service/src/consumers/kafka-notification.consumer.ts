@@ -7,6 +7,7 @@ import {
   FraudAlertCreatedEvent,
   UserRegisteredEvent,
   WithdrawalCodeCreatedEvent,
+  BeneficiaryAddedEvent,
 } from '../types';
 
 export class KafkaNotificationConsumer {
@@ -24,6 +25,7 @@ export class KafkaNotificationConsumer {
       'account.status.changed.v1',
       'fraud.alert.created.v1',
       'withdrawal.code.created.v1',
+      'beneficiary.added.v1',
     ];
 
     this.kafkaService.subscribe(
@@ -68,10 +70,16 @@ export class KafkaNotificationConsumer {
             await this.notificationService.handleWithdrawalCodeCreated(payload as WithdrawalCodeCreatedEvent);
             break;
 
+          case 'beneficiary.added.v1':
+            await this.notificationService.handleBeneficiaryAdded(payload as BeneficiaryAddedEvent);
+            break;
+
           default:
             logger.warn({ topic }, 'Unhandled notification topic');
         }
-      }
+      },
+      // Retries are parked on notification.<topic>.retry, which only notification-svc may write and read
+      { retryNamespace: 'notification' }
     );
   }
 

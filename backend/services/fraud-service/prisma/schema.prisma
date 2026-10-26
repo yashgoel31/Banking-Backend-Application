@@ -48,7 +48,7 @@ model RiskAssessment {
   assessedAt     DateTime  @default(now()) @map("assessed_at")
 
   @@index([transactionId])
-  @@index([accountId])
+  @@index([accountId, assessedAt]) // velocity and per-account structuring windows
   @@index([riskLevel])
   @@index([initiatedBy, assessedAt])
   @@map("risk_assessments")
@@ -68,11 +68,14 @@ model FraudAlert {
   // Four-eyes closure of HIGH/CRITICAL alerts: first analyst proposes, a different one confirms
   closeRequestedBy     String?      @map("close_requested_by")
   closeRequestedStatus AlertStatus? @map("close_requested_status")
+  // Rules that fired (e.g. RULE_VELOCITY_CHECK): an open velocity alert suppresses further velocity-only alerts
+  ruleIds       String[]    @default([]) @map("rule_ids")
   createdAt     DateTime    @default(now()) @map("created_at")
   updatedAt     DateTime    @updatedAt @map("updated_at")
 
   @@index([status])
   @@index([transactionId])
+  @@index([accountId, createdAt])
   @@map("fraud_alerts")
 }
 

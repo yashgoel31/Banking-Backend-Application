@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import Redis from 'ioredis';
 import { PrismaClient } from '../generated/client';
 import {
+  assertNoPlaceholders,
   connectRedis,
   createAuthenticate,
   createBaseApp,
@@ -106,6 +107,7 @@ export function createApp(prisma: PrismaClient, deps: TransactionAppDeps) {
 }
 
 async function main(): Promise<void> {
+  assertNoPlaceholders(['DATABASE_URL', 'REDIS_URL', 'KAFKA_PASSWORD', 'JWT_VERIFY_KEYS', 'LEDGER_INTERNAL_TOKEN']);
   // Read (and validated) before anything starts: a NaN interval would make setInterval fire every millisecond
   const outboxPollMs = envNumber('OUTBOX_POLL_INTERVAL_MS', 2000, 100);
   const reconcileIntervalMs = envNumber('RECONCILE_INTERVAL_MS', 10 * 60 * 1000, 1000);
