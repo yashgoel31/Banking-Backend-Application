@@ -176,11 +176,13 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 | `PATCH /api/v1/auth/admin/users/:id/status` | BANK_ADMIN (customers: immediate, re-enable by a different admin; staff: 202 request) |
 | `POST /api/v1/auth/admin/users/:id/mfa/reset` | BANK_ADMIN (always a 202 four-eyes request) |
 | `GET /api/v1/auth/admin/requests` · `POST .../:id/approve` · `POST .../:id/reject` | BANK_ADMIN (never the requester or the target) |
-| `GET/POST/PATCH /api/v1/customers/me` | owner |
+| `GET/POST/PATCH /api/v1/customers/me` (name: letters, marks, spaces, `.'-`; date of birth: age 18–120) | owner |
 | `GET /api/v1/customers/:userId` (logged) · `PATCH /api/v1/customers/:userId/kyc` `{kycStatus, expectedVersion}` | staff · KYC_OFFICER |
-| `POST /api/v1/accounts` (needs VERIFIED KYC) · `GET /api/v1/accounts` · `GET /api/v1/accounts/:id` | owner (staff may list via `?customerId=`) |
-| `PATCH /api/v1/accounts/:id/status` | customer: freeze only · BANK_ADMIN: unfreeze (not one they froze) / close (zero balance) |
-| `PATCH /api/v1/accounts/:id/daily-limit` | owner (capped) · BANK_ADMIN |
+| `GET /api/v1/customers?kycStatus&q&limit&offset` (logged per profile; `PENDING` = review queue, oldest first) · `GET .../:userId/kyc/history` (logged) | KYC_OFFICER, BANK_ADMIN, SUPPORT |
+| `POST /api/v1/accounts` (needs VERIFIED KYC) · `GET /api/v1/accounts` · `GET /api/v1/accounts/:id` | owner (staff may list via `?customerId=`; staff reads logged) |
+| `GET /api/v1/accounts/lookup?accountNumber=` → `{id, accountNumber, customerId, accountType, status}` (logged) | staff |
+| `PATCH /api/v1/accounts/:id/status` | customer: freeze only · BANK_ADMIN: freeze (on an already-frozen account: a bank hold), unfreeze (not one they froze or held) / close (zero balance) |
+| `PATCH /api/v1/accounts/:id/daily-limit` | owner (lower freely; raise up to the customer cap and the bank ceiling) · BANK_ADMIN (sets the bank ceiling, `bankLimitCeilingPaise`) |
 | `GET/POST /api/v1/transactions/beneficiaries` · `DELETE .../:id` | CUSTOMER |
 | `POST /api/v1/transactions/transfer` | CUSTOMER: own accounts, or an active beneficiary |
 | `POST /api/v1/transactions/withdrawal-codes` `{accountId, amountInPaise}` → one-time 8-digit code, emailed notice | CUSTOMER (account owner; step-up from ₹25,000) |
@@ -222,8 +224,9 @@ Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAG
   and fake deposits surface as a shortage. Withdrawals need the customer's one-time code for the exact amount
   (emailed notice; brute force burns all codes); large or over-budget operations need a second person; a
   cumulative structuring rule flags split cash operations.
-- **Dual control on account and user status**: an account frozen by a staff member, or a user disabled by an
-  administrator, can only be reinstated by a different administrator.
+- **Dual control on account and user status**: an account frozen by a staff member (or held by one after its
+  owner froze it), or a user disabled by an administrator, can only be reinstated by a different administrator.
+  A daily limit set by an administrator is a ceiling the owner can lower but not raise past.
 - **Payee controls**: transfers only to own accounts or registered beneficiaries; cooling-off unless added with a fresh step-up;
   first-day cap per new beneficiary; per-account and per-customer daily outflow limits.
 - **Anti-enumeration**: register, login, forgot-password and resend-verification respond identically for
