@@ -31,6 +31,10 @@ export interface OutboxRelayOptions {
   maxAttempts?: number;
   /** PUBLISHED rows older than this are purged */
   retentionDays?: number;
+  /** Rows deleted per purge statement: each statement stays short (far below the app role's statement_timeout) */
+  purgeBatchSize?: number;
+  /** Time budget of one purge run; whatever is left is deleted by the next run */
+  purgeBudgetMs?: number;
 }
 
 const MAX_BACKOFF_SECONDS = 300;
@@ -65,6 +69,8 @@ export class OutboxRelay {
       leaseSeconds: options.leaseSeconds ?? 300,
       maxAttempts: options.maxAttempts ?? Number(process.env.OUTBOX_MAX_ATTEMPTS || 60),
       retentionDays: options.retentionDays ?? Number(process.env.OUTBOX_RETENTION_DAYS || 7),
+      purgeBatchSize: options.purgeBatchSize ?? 5_000,
+      purgeBudgetMs: options.purgeBudgetMs ?? 5 * 60_000,
     };
   }
 
@@ -194,12 +200,28 @@ export class OutboxRelay {
     return Number(n);
   }
 
-  /** Deletes PUBLISHED rows past the retention window */
+  /**
+   * Deletes PUBLISHED rows past the retention window in batches of `purgeBatchSize` rows per statement, so a
+   * large backlog never becomes one long-running DELETE (statement_timeout, lock and WAL spikes). Stops when
+   * a batch comes back short, the relay stops, or the time budget is used up. Returns the rows deleted.
+   */
   public async purgePublished(): Promise<number> {
-    return this.prisma.$executeRaw`
-      DELETE FROM outbox_events
-      WHERE status = 'PUBLISHED' AND published_at < now() - make_interval(days => ${this.opts.retentionDays})
-    `;
+    const deadline = Date.now() + this.opts.purgeBudgetMs;
+    let total = 0;
+    for (;;) {
+      const deleted = await this.prisma.$executeRaw`
+        DELETE FROM outbox_events
+        WHERE id IN (
+          SELECT id FROM outbox_events
+          WHERE status = 'PUBLISHED' AND published_at < now() - make_interval(days => ${this.opts.retentionDays})
+          LIMIT ${this.opts.purgeBatchSize}
+        )
+      `;
+      total += deleted;
+      if (deleted < this.opts.purgeBatchSize || this.stopped || Date.now() >= deadline) break;
+    }
+    if (total > 0) logger.info({ deleted: total }, 'Purged published outbox events');
+    return total;
   }
 
   private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
