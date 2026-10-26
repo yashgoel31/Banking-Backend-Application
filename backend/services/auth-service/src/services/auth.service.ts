@@ -954,8 +954,8 @@ export class AuthService {
   }
 
   /**
-   * Mirrors token versions into Redis. At startup every non-zero version is synced; periodically, only
-   * recently changed users, so a Redis write that failed during a reset is repaired within seconds.
+   * Mirrors token versions into Redis: every non-zero version (full pass), or only users changed since a
+   * given time. Writes are pipelined per batch when the store supports it.
    */
   public async syncTokenVersions(changedSince?: Date): Promise<number> {
     let synced = 0;
@@ -968,8 +968,10 @@ export class AuthService {
         take: 500,
         ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
       });
-      for (const u of batch) {
-        await this.tokenState.setTokenVersion(u.id, u.tokenVersion);
+      if (this.tokenState.setTokenVersions) {
+        await this.tokenState.setTokenVersions(batch.map((u) => ({ userId: u.id, tokenVersion: u.tokenVersion })));
+      } else {
+        for (const u of batch) await this.tokenState.setTokenVersion(u.id, u.tokenVersion);
       }
       synced += batch.length;
       if (batch.length < 500) return synced;
@@ -980,6 +982,36 @@ export class AuthService {
   /** Lookback for the periodic sync: at least twice the access-token lifetime */
   public syncLookbackMs(): number {
     return Math.max(10 * 60_000, 2 * this.tokenService.accessTokenTtlSeconds * 1000);
+  }
+
+  /**
+   * Keeps Redis in step with the DB without delaying startup: a full pass runs in the background (retried
+   * every interval until it succeeds), then each pass syncs the users changed since shortly before the
+   * previous successful one, which repairs any write that failed (e.g. a Redis blip during a reset). Passes
+   * never overlap. Serving before the first pass is safe: Redis is persistent and normally already current,
+   * and the other services check it whether or not auth-service is up. Returns a function that stops it.
+   */
+  public startTokenVersionSync(intervalMs = 30_000): () => void {
+    let lastSuccessStart: number | null = null;
+    let running = false;
+    const pass = async () => {
+      if (running) return;
+      running = true;
+      const startedAt = Date.now();
+      const full = lastSuccessStart === null;
+      try {
+        const synced = await this.syncTokenVersions(full ? undefined : new Date(lastSuccessStart! - this.syncLookbackMs()));
+        if (full) logger.info({ synced }, 'Token versions mirrored to Redis');
+        lastSuccessStart = startedAt;
+      } catch (err) {
+        logger.warn({ err, full }, 'Token version sync failed; retrying on the next interval');
+      } finally {
+        running = false;
+      }
+    };
+    void pass();
+    const timer = setInterval(() => void pass(), intervalMs);
+    return () => clearInterval(timer);
   }
 
   /**

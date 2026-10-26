@@ -595,6 +595,54 @@ describe('AuthService', () => {
     });
   });
 
+  describe('token version sync', () => {
+    const until = async (condition: () => boolean, timeoutMs = 2000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (!condition()) {
+        if (Date.now() > deadline) throw new Error('condition not met in time');
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+
+    it('STARTUP: the full pass runs in the background, is retried until it succeeds, then only recent changes are synced', async () => {
+      const passes: Array<Date | undefined> = [];
+      let releaseFirst!: () => void;
+      const firstPass = new Promise<void>((r) => (releaseFirst = r));
+      jest.spyOn(authService, 'syncTokenVersions').mockImplementation(async (since?: Date) => {
+        passes.push(since);
+        if (passes.length === 1) {
+          await firstPass; // a slow full pass over a big users table...
+          throw new Error('redis blip'); // ...that then fails
+        }
+        return 0;
+      });
+
+      const stop = authService.startTokenVersionSync(10);
+      // Returned straight away: the caller starts listening while the first full pass is still running
+      expect(passes).toEqual([undefined]);
+      await new Promise((r) => setTimeout(r, 40));
+      expect(passes).toHaveLength(1); // no overlapping passes while one is in flight
+      releaseFirst();
+      await until(() => passes.length >= 3);
+      stop();
+      expect(passes[1]).toBeUndefined(); // the failed full pass is retried as a full pass
+      expect(passes[2]).toBeInstanceOf(Date); // afterwards: incremental, with a lookback
+      expect(passes[2]!.getTime()).toBeLessThan(Date.now() - authService.syncLookbackMs() + 1000);
+    });
+
+    it('pipelines the Redis writes: one round trip per batch of users', async () => {
+      const batch = Array.from({ length: 500 }, (_, i) => ({ id: `u${String(i).padStart(3, '0')}`, tokenVersion: 2 }));
+      prisma.user.findMany.mockResolvedValueOnce(batch).mockResolvedValueOnce([{ id: 'u999', tokenVersion: 1 }]);
+      const many = jest.spyOn(tokenState, 'setTokenVersions');
+      const one = jest.spyOn(tokenState, 'setTokenVersion');
+      expect(await authService.syncTokenVersions()).toBe(501);
+      expect(many).toHaveBeenCalledTimes(2);
+      expect(many.mock.calls[0][0]).toHaveLength(500);
+      expect(one).not.toHaveBeenCalled();
+      expect(await tokenState.isAccessTokenRevoked({ userId: 'u042', jti: 'j', tokenVersion: 1 })).toBe(true);
+    });
+  });
+
   describe('forgot / reset password', () => {
     it('ENUMERATION: unknown emails get the same 202 answer and no email', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
