@@ -195,7 +195,9 @@ Authenticated endpoints need `Authorization: Bearer <accessToken>`. Money-moving
 
 Errors are JSON: `{ "error": { "code", "message", "correlationId" } }`. `503 SERVICE_BUSY` /
 `SERVICE_UNAVAILABLE` (with `Retry-After`) means nothing was committed and the request is safe to retry with
-the same Idempotency-Key.
+the same Idempotency-Key. On authenticated endpoints `401` only ever means the access token is missing, invalid,
+expired or revoked: a wrong password or code in the body (password change, MFA setup/disable, step-up) is
+`403 INVALID_PASSWORD` or `400 INVALID_MFA_CODE`, so clients don't mistake a typo for an expired session.
 
 Swagger UI is served by each service at `/docs` outside production (`ENABLE_SWAGGER=true` to force it on).
 
