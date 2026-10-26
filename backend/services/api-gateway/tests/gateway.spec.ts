@@ -123,6 +123,29 @@ describe('API Gateway', () => {
     }
   });
 
+  it('STAFF NETWORK: staff-only endpoints under customer prefixes (account lookup, customer search) are covered exactly', async () => {
+    process.env.STAFF_ALLOWED_CIDRS = '10.20.0.0/16';
+    try {
+      const app = createGateway({
+        routes: [
+          { name: 'account-service', prefix: '/api/v1/accounts', target: upstreamUrl },
+          { name: 'customer-service', prefix: '/api/v1/customers', target: upstreamUrl },
+        ],
+      });
+      for (const path of ['/api/v1/accounts/lookup?accountNumber=210000000004', '/api/v1/customers?kycStatus=PENDING', '/api/v1/Customers/']) {
+        const res = await request(app).get(path);
+        expect([path, res.status]).toEqual([path, 403]);
+      }
+      // Customer routes that share those prefixes stay reachable (the services still check roles)
+      for (const path of ['/api/v1/customers/me', '/api/v1/accounts', '/api/v1/accounts/1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b']) {
+        const res = await request(app).get(path);
+        expect([path, res.status]).toEqual([path, 200]);
+      }
+    } finally {
+      delete process.env.STAFF_ALLOWED_CIDRS;
+    }
+  });
+
   it('UPSTREAM ABORT: an upstream dying mid-response aborts the client response instead of leaving it hanging', async () => {
     // Sends headers and part of the body, then drops the connection
     const dying = http.createServer((_req, res) => {
