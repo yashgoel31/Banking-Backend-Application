@@ -25,13 +25,14 @@ describe('CustomerService (Redis Cache-Aside & Invalidation)', () => {
     mockPrisma = {
       customerProfile: {
         findUnique: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
         create: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn(),
       },
       kycEvent: { create: jest.fn(), findMany: jest.fn() },
-      staffAccessLog: { create: jest.fn() },
+      staffAccessLog: { create: jest.fn(), createMany: jest.fn() },
       $queryRaw: jest.fn().mockResolvedValue([]),
     };
     mockPrisma.$transaction = jest.fn((cb: any) => cb(mockPrisma));
@@ -245,6 +246,65 @@ describe('CustomerService (Redis Cache-Aside & Invalidation)', () => {
       mockPrisma.kycEvent.findMany.mockResolvedValue([{ id: 'ev-1', userId: 'u-1' }]);
       mockPrisma.staffAccessLog.create.mockRejectedValue(new Error('db down'));
       await expect(customerService.getKycHistory(support, 'u-1')).rejects.toThrow('db down');
+    });
+  });
+
+  describe('listProfilesForStaff (staff search)', () => {
+    const officer = { id: 'kyc-1', email: 'k@b.com', role: 'KYC_OFFICER' as const, mfa: true };
+    const page = { limit: 20, offset: 40 };
+    const query = () => mockPrisma.customerProfile.findMany.mock.calls[0][0];
+
+    it('PENDING is a review queue: oldest first', async () => {
+      await customerService.listProfilesForStaff(officer, { kycStatus: 'PENDING' as any }, page);
+      expect(query()).toEqual({
+        where: { kycStatus: 'PENDING' },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: 20,
+        skip: 40,
+      });
+    });
+
+    it('anything else is newest first', async () => {
+      await customerService.listProfilesForStaff(officer, {}, page);
+      expect(query()).toEqual({ where: {}, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 20, skip: 40 });
+      mockPrisma.customerProfile.findMany.mockClear();
+      await customerService.listProfilesForStaff(officer, { kycStatus: 'VERIFIED' as any }, page);
+      expect(query().orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
+    });
+
+    it('q: a UUID is an exact user id; anything else searches names (any case) and phone numbers', async () => {
+      await customerService.listProfilesForStaff(officer, { q: '0B8F2A52-0D55-4BB4-9A43-6F0D8F1F0A01' }, page);
+      expect(query().where).toEqual({ userId: '0b8f2a52-0d55-4bb4-9a43-6f0d8f1f0a01' });
+
+      mockPrisma.customerProfile.findMany.mockClear();
+      await customerService.listProfilesForStaff(officer, { kycStatus: 'PENDING' as any, q: 'smith' }, page);
+      expect(query().where).toEqual({
+        kycStatus: 'PENDING',
+        OR: [{ fullName: { contains: 'smith', mode: 'insensitive' } }, { phoneNumber: { contains: 'smith' } }],
+      });
+    });
+
+    it('every returned profile is a recorded staff read (one createMany); nothing returned, nothing recorded', async () => {
+      mockPrisma.customerProfile.findMany.mockResolvedValue([{ userId: 'u-1' }, { userId: 'u-2' }]);
+      const profiles = await customerService.listProfilesForStaff(officer, {}, page);
+      expect(profiles).toEqual([{ userId: 'u-1' }, { userId: 'u-2' }]);
+      expect(mockPrisma.staffAccessLog.createMany).toHaveBeenCalledWith({
+        data: [
+          { actorId: 'kyc-1', actorRole: 'KYC_OFFICER', userId: 'u-1', action: 'LIST_CUSTOMERS' },
+          { actorId: 'kyc-1', actorRole: 'KYC_OFFICER', userId: 'u-2', action: 'LIST_CUSTOMERS' },
+        ],
+      });
+
+      mockPrisma.staffAccessLog.createMany.mockClear();
+      mockPrisma.customerProfile.findMany.mockResolvedValue([]);
+      await customerService.listProfilesForStaff(officer, {}, page);
+      expect(mockPrisma.staffAccessLog.createMany).not.toHaveBeenCalled();
+    });
+
+    it('NO READ WITHOUT A LOG: if the access log cannot be written, nothing is returned', async () => {
+      mockPrisma.customerProfile.findMany.mockResolvedValue([{ userId: 'u-1' }]);
+      mockPrisma.staffAccessLog.createMany.mockRejectedValue(new Error('db down'));
+      await expect(customerService.listProfilesForStaff(officer, {}, page)).rejects.toThrow('db down');
     });
   });
 });

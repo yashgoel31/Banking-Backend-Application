@@ -29,6 +29,8 @@ model CustomerProfile {
 
   @@index([userId])
   @@index([phoneNumber])
+  @@index([kycStatus, createdAt]) // KYC review queue (staff search, oldest first)
+  @@index([createdAt]) // staff search, newest first
   @@map("customer_profiles")
 }
 

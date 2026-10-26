@@ -1,4 +1,4 @@
-import { PrismaClient, CustomerProfile, KycStatus } from '../../generated/client';
+import { PrismaClient, Prisma, CustomerProfile, KycStatus } from '../../generated/client';
 import Redis from 'ioredis';
 import { AuthenticatedUser, ConflictError, ForbiddenError, HttpError, NotFoundError, logger } from '@banksphere/common';
 
@@ -16,6 +16,14 @@ export interface UpdateProfileDTO {
   address?: string;
   dateOfBirth?: Date;
 }
+
+/** Staff search: optional KYC status, and q = an exact user id (UUID) or part of a name / phone number */
+export interface StaffProfileFilter {
+  kycStatus?: KycStatus;
+  q?: string;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class CustomerService {
   private readonly cacheTTLSeconds: number;
@@ -255,6 +263,39 @@ export class CustomerService {
       data: { actorId: actor.id, actorRole: actor.role, userId, action: 'VIEW_PROFILE' },
     });
     return profile;
+  }
+
+  /**
+   * Staff search over customer profiles, always served from the database. PENDING is the KYC review queue
+   * (oldest first); anything else is newest first. Every profile returned is recorded first (one row each).
+   */
+  public async listProfilesForStaff(
+    actor: AuthenticatedUser,
+    filter: StaffProfileFilter,
+    page: { limit: number; offset: number }
+  ): Promise<CustomerProfile[]> {
+    const where: Prisma.CustomerProfileWhereInput = {};
+    if (filter.kycStatus) where.kycStatus = filter.kycStatus;
+    if (filter.q) {
+      if (UUID_PATTERN.test(filter.q)) {
+        where.userId = filter.q.toLowerCase();
+      } else {
+        where.OR = [{ fullName: { contains: filter.q, mode: 'insensitive' } }, { phoneNumber: { contains: filter.q } }];
+      }
+    }
+    const direction = filter.kycStatus === KycStatus.PENDING ? 'asc' : 'desc';
+    const profiles = await this.prisma.customerProfile.findMany({
+      where,
+      orderBy: [{ createdAt: direction }, { id: direction }],
+      take: page.limit,
+      skip: page.offset,
+    });
+    if (profiles.length) {
+      await this.prisma.staffAccessLog.createMany({
+        data: profiles.map((p) => ({ actorId: actor.id, actorRole: actor.role, userId: p.userId, action: 'LIST_CUSTOMERS' })),
+      });
+    }
+    return profiles;
   }
 
   /** Staff read of a customer's KYC trail (it carries identity data: names, dates of birth, addresses): recorded */
