@@ -45,7 +45,14 @@ const STAFF_PATHS = [
   '/api/v1/transactions/withdraw',
   '/api/v1/transactions/teller',
   '/api/v1/transactions/cash-operations',
+  '/api/v1/accounts/lookup',
 ];
+
+/** Staff-only endpoints whose path is also a prefix of customer routes (e.g. /customers vs /customers/me): exact only */
+const STAFF_EXACT_PATHS = ['/api/v1/customers'];
+
+const isStaffPath = (path: string) =>
+  STAFF_EXACT_PATHS.includes(path) || STAFF_PATHS.some((p) => path === p || path.startsWith(`${p}/`));
 
 /** Decoded, lower-cased, without duplicate or trailing slashes; null if it can't be decoded */
 export function canonicalPath(path: string): string | null {
@@ -143,7 +150,7 @@ export function createGateway(options: GatewayOptions = {}) {
         res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Malformed request path', correlationId: req.correlationId } });
         return;
       }
-      if (!STAFF_PATHS.some((p) => path === p || path.startsWith(`${p}/`))) return next();
+      if (!isStaffPath(path)) return next();
       if (isAddressAllowed(staffNetworks, req.ip)) return next();
       req.log.warn({ path: req.path }, 'Staff API called from a non-allowed network');
       const error = staffNetworkError();
