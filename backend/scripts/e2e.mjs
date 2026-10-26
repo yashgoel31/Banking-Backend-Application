@@ -180,7 +180,9 @@ async function decideKyc(officer, userId, kycStatus) {
 }
 
 async function kycVerified(user, officer) {
-  await api('POST', '/api/v1/customers/me', { token: user.token, body: { fullName: `E2E ${user.email.split('.')[0]}`, phoneNumber: '+919876543210' } });
+  // Names are letters only (digits are refused by profile validation)
+  const first = user.email.split('.')[0].replace(/[^A-Za-z]/g, '') || 'Customer';
+  await api('POST', '/api/v1/customers/me', { token: user.token, body: { fullName: `Test ${first}`, phoneNumber: '+919876543210' } });
   const res = await decideKyc(officer, user.id, 'VERIFIED');
   if (res.status !== 200) throw new Error(`kyc ${user.email}: ${JSON.stringify(res.body)}`);
 }
@@ -262,6 +264,10 @@ const rejectPuppet = await api('POST', `/api/v1/auth/admin/requests/${puppet.bod
 check('a second administrator can reject it', rejectPuppet.status === 200, rejectPuppet.body);
 const approveRejected = await api('POST', `/api/v1/auth/admin/requests/${puppet.body.data.requestId}/approve`, { token: admin2.token });
 check('a rejected request can never be approved (409)', approveRejected.status === 409, approveRejected.body);
+const aboutAdmin2 = await api('PATCH', `/api/v1/auth/admin/users/${admin2.id}/status`, { token: admin.token, body: { isActive: false } });
+const targetRejects = await api('POST', `/api/v1/auth/admin/requests/${aboutAdmin2.body.data?.requestId}/reject`, { token: admin2.token });
+check('FOUR-EYES: the administrator a request is about cannot reject it (403)', aboutAdmin2.status === 202 && targetRejects.status === 403, [aboutAdmin2.body, targetRejects.body]);
+check('...the requester can withdraw it', (await api('POST', `/api/v1/auth/admin/requests/${aboutAdmin2.body.data?.requestId}/reject`, { token: admin.token })).status === 200);
 
 const teller = await onboardStaff('TELLER', 'teller');
 check('approved by a second admin -> activation email -> staff sets own password -> MFA enrolled', Boolean(teller.token));
@@ -270,6 +276,10 @@ const kyc = await onboardStaff('KYC_OFFICER', 'kyc');
 const analyst = await onboardStaff('FRAUD_ANALYST', 'analyst1');
 const analyst2 = await onboardStaff('FRAUD_ANALYST', 'analyst2');
 check('KYC officer and two fraud analysts onboarded the same way', Boolean(kyc.token && analyst.token && analyst2.token));
+const directory = await api('GET', `/api/v1/auth/admin/users?q=${encodeURIComponent(teller.email)}`, { token: admin.token });
+check('DIRECTORY: administrators find staff by email, with no secrets in the response', directory.status === 200 && directory.body.data.length === 1 && directory.body.data[0].id === teller.id && !/password|secret|hash/i.test(JSON.stringify(directory.body)), directory.body);
+check('...and by id, filtered by role', (await api('GET', `/api/v1/auth/admin/users?role=TELLER&q=${teller.id}`, { token: admin.token })).body?.data?.[0]?.id === teller.id);
+check('...tellers cannot list users (403)', (await api('GET', '/api/v1/auth/admin/users', { token: teller.token })).status === 403);
 const replayCode = totp(teller.secret, usedSteps.get(teller.secret));
 const tellerPw = await api('POST', '/api/v1/auth/login', { body: { email: teller.email, password: PASSWORD } });
 const replayAttempt = await api('POST', '/api/v1/auth/login/mfa', { body: { challengeToken: tellerPw.body.data?.challengeToken, code: replayCode } });
@@ -289,6 +299,12 @@ const unverifiedLogin = await api('POST', '/api/v1/auth/login', { body: { email:
 check('login before verifying email is refused (403 EMAIL_NOT_VERIFIED)', unverifiedLogin.status === 403 && unverifiedLogin.body.error.code === 'EMAIL_NOT_VERIFIED', unverifiedLogin.body);
 const dupReg = await api('POST', '/api/v1/auth/register', { body: { email: pendingEmail, password: PASSWORD } });
 check('ENUMERATION: registering an existing email gives the identical 202 response', dupReg.status === 202 && dupReg.body.message === reg.body.message, dupReg.body);
+const squatEmail = `squat.${runId}@banksphere.local`;
+const squat = await api('POST', '/api/v1/auth/register', { body: { email: squatEmail, password: PASSWORD } });
+check('STAFF DOMAIN: public sign-up with a staff address answers the same 202 but creates nothing', squat.status === 202 && squat.body.message === reg.body.message, squat.body);
+const squatStaff = await api('POST', '/api/v1/auth/admin/users', { token: admin.token, body: { email: squatEmail, role: 'SUPPORT' } });
+check('...so a real staff request for that address is not blocked (202)', squatStaff.status === 202, squatStaff.body);
+await api('POST', `/api/v1/auth/admin/requests/${squatStaff.body.data?.requestId}/reject`, { token: admin.token });
 check('...and the owner gets a "sign-up attempt" notice instead', Boolean(await waitForEmail(pendingEmail, /Sign-up attempt/)));
 const verifyMail = await waitForEmail(pendingEmail, /Verify your BankSphere email/);
 check('verification email delivered over SMTP (text + HTML) with a #token= link', Boolean(verifyMail) && /verify-email#token=/.test(verifyMail.text) && /<a href=/.test(verifyMail.html ?? ''), verifyMail?.text);
@@ -359,18 +375,45 @@ const newPwLogin = await api('POST', '/api/v1/auth/login', { body: { email: erin
 check('old password no longer works; new one does (and the lockout was cleared)', oldPwLogin.status === 401 && newPwLogin.status === 200, [oldPwLogin.status, newPwLogin.body]);
 check('"password changed" security notice emailed', Boolean(await waitForEmail(erin.email, /password was changed/)));
 const erinToken = newPwLogin.body.data?.tokens?.accessToken;
-check('change-password requires the current password', (await api('POST', '/api/v1/auth/password/change', { token: erinToken, body: { currentPassword: 'NotIt12345', newPassword: 'ChangedPassw0rd' } })).status === 401);
+const wrongCurrent = await api('POST', '/api/v1/auth/password/change', { token: erinToken, body: { currentPassword: 'NotIt12345', newPassword: 'ChangedPassw0rd' } });
+check('change-password requires the current password (403 INVALID_PASSWORD, never 401)', wrongCurrent.status === 403 && wrongCurrent.body.error.code === 'INVALID_PASSWORD', wrongCurrent.body);
+check('...and a mistyped password does not end the session', (await api('GET', '/api/v1/auth/me', { token: erinToken })).status === 200);
 const change = await api('POST', '/api/v1/auth/password/change', { token: erinToken, body: { currentPassword: NEW_PASSWORD, newPassword: 'ChangedPassw0rd' } });
 check('change-password succeeds and returns fresh tokens', change.status === 200 && change.body.data.tokens.accessToken, change.body);
 check('...the previous access token is revoked', (await api('GET', '/api/v1/auth/me', { token: erinToken })).status === 401);
 
 const erinWrongPw = await api('POST', '/api/v1/auth/mfa/setup', { token: change.body.data?.tokens?.accessToken, body: { password: 'NotMyPassw0rd' } });
-check('MFA setup requires re-entering the password', erinWrongPw.status === 401, erinWrongPw.body);
+check('MFA setup requires re-entering the password (403 INVALID_PASSWORD)', erinWrongPw.status === 403 && erinWrongPw.body.error.code === 'INVALID_PASSWORD', erinWrongPw.body);
 const erinMfa = await enrolMfa(change.body.data?.tokens?.accessToken, 'ChangedPassw0rd');
 check('customer can opt in to MFA (no enrolment token needed for customers)', erinMfa.enableStatus === 200, erinMfa);
 const erinPwOnly = await api('POST', '/api/v1/auth/login', { body: { email: erin.email, password: 'ChangedPassw0rd' } });
 check('customer with MFA: password alone is not enough', erinPwOnly.body?.data?.mfaRequired === true && !erinPwOnly.body.data.tokens, erinPwOnly.body);
 check('"two-factor enabled" notice emailed', Boolean(await waitForEmail(erin.email, /Two-factor authentication enabled/)));
+
+// ---------------------------------------------------------------------------
+section('Browser sessions (HttpOnly refresh cookie)');
+const cookieUser = await registerVerified('cookie');
+const COOKIE_MODE = { 'X-Session-Transport': 'cookie' };
+const cookieLogin = await api('POST', '/api/v1/auth/login', { headers: COOKIE_MODE, body: { email: cookieUser.email, password: PASSWORD } });
+const loginCookieHeader = cookieLogin.headers.get('set-cookie') ?? '';
+check(
+  'COOKIE SESSION: login sets an HttpOnly, Secure, SameSite=Strict refresh cookie scoped to /api/v1/auth',
+  cookieLogin.status === 200 && /bs_rt=/.test(loginCookieHeader) && /HttpOnly/i.test(loginCookieHeader) && /Secure/i.test(loginCookieHeader) && /SameSite=Strict/i.test(loginCookieHeader) && /Path=\/api\/v1\/auth/i.test(loginCookieHeader),
+  loginCookieHeader
+);
+check('...and the refresh token is never in the response body', Boolean(cookieLogin.body?.data?.tokens?.accessToken) && !('refreshToken' in (cookieLogin.body?.data?.tokens ?? {})), cookieLogin.body?.data?.tokens);
+const cookie1 = /bs_rt=[^;]+/.exec(loginCookieHeader)?.[0] ?? '';
+const cookieRefresh = await api('POST', '/api/v1/auth/refresh', { headers: { ...COOKIE_MODE, cookie: cookie1 }, body: {} });
+const cookie2 = /bs_rt=[^;]+/.exec(cookieRefresh.headers.get('set-cookie') ?? '')?.[0] ?? '';
+check(
+  'COOKIE SESSION: refreshing with the cookie returns only {accessToken, expiresInSeconds} and rotates the cookie',
+  cookieRefresh.status === 200 && Object.keys(cookieRefresh.body.data).sort().join() === 'accessToken,expiresInSeconds' && Boolean(cookie2) && cookie2 !== cookie1,
+  cookieRefresh.body
+);
+check('COOKIE SESSION: the header without a cookie means no session (401)', (await api('POST', '/api/v1/auth/refresh', { headers: COOKIE_MODE, body: {} })).status === 401);
+const cookieLogout = await api('POST', '/api/v1/auth/logout', { token: cookieRefresh.body.data?.accessToken, headers: { ...COOKIE_MODE, cookie: cookie2 }, body: {} });
+check('COOKIE SESSION: logout clears the cookie', cookieLogout.status === 200 && /bs_rt=;|Max-Age=0/i.test(cookieLogout.headers.get('set-cookie') ?? ''), cookieLogout.headers.get('set-cookie'));
+check('...and the cookie can no longer refresh (401)', (await api('POST', '/api/v1/auth/refresh', { headers: { ...COOKIE_MODE, cookie: cookie2 }, body: {} })).status === 401);
 
 // ---------------------------------------------------------------------------
 section('Customer profiles & KYC (KYC officers only)');
@@ -379,6 +422,12 @@ const noKycAccount = await api('POST', '/api/v1/accounts', { token: alice.token,
 check('KYC: account opening is refused until KYC is verified (403 KYC_NOT_VERIFIED)', noKycAccount.status === 403 && noKycAccount.body.error.code === 'KYC_NOT_VERIFIED', noKycAccount.body);
 check('customer cannot self-verify KYC (403)', (await api('PATCH', `/api/v1/customers/${alice.id}/kyc`, { token: alice.token, body: { kycStatus: 'VERIFIED', expectedVersion: 1 } })).status === 403);
 check('SEPARATION OF DUTIES: an administrator cannot decide KYC (403)', (await api('PATCH', `/api/v1/customers/${alice.id}/kyc`, { token: admin.token, body: { kycStatus: 'VERIFIED', expectedVersion: 1 } })).status === 403);
+check('PROFILE: a future date of birth is refused (400)', (await api('PATCH', '/api/v1/customers/me', { token: alice.token, body: { dateOfBirth: '2099-01-01' } })).status === 400);
+check('PROFILE: names with hidden direction-override characters are refused (400)', (await api('PATCH', '/api/v1/customers/me', { token: alice.token, body: { fullName: 'Alice ‮elpmaxE' } })).status === 400);
+const queue = await api('GET', '/api/v1/customers?kycStatus=PENDING&limit=100', { token: kyc.token });
+check('KYC QUEUE: officers list pending customers, including the new profile', queue.status === 200 && queue.body.data.every((p) => p.kycStatus === 'PENDING') && queue.body.data.some((p) => p.userId === alice.id), queue.body?.data?.length);
+check('...tellers and customers cannot list customers (403)', (await api('GET', '/api/v1/customers', { token: teller.token })).status === 403 && (await api('GET', '/api/v1/customers', { token: alice.token })).status === 403);
+check('...customers still read their own profile at /customers/me', (await api('GET', '/api/v1/customers/me', { token: alice.token })).status === 200);
 const reviewed = await api('GET', `/api/v1/customers/${alice.id}`, { token: kyc.token });
 await api('PATCH', '/api/v1/customers/me', { token: alice.token, body: { phoneNumber: '+919876500001' } });
 const stale = await api('PATCH', `/api/v1/customers/${alice.id}/kyc`, { token: kyc.token, body: { kycStatus: 'VERIFIED', expectedVersion: reviewed.body?.data?.version } });
@@ -402,6 +451,18 @@ const bobAcc = (await api('POST', '/api/v1/accounts', { token: bob.token, body: 
 check('accounts created with 12-digit numbers', /^\d{12}$/.test(aliceAcc?.accountNumber) && /^\d{12}$/.test(aliceAcc2?.accountNumber) && /^\d{12}$/.test(bobAcc?.accountNumber), { aliceAcc, bobAcc });
 check('ledger account provisioned and active (balance 0)', (await balance(alice.token, aliceAcc.id)) === '0');
 check("IDOR: bob cannot read alice's account (404)", (await api('GET', `/api/v1/accounts/${aliceAcc.id}`, { token: bob.token })).status === 404);
+const lookup = await api('GET', `/api/v1/accounts/lookup?accountNumber=${aliceAcc.accountNumber}`, { token: teller.token });
+check(
+  'ACCOUNT LOOKUP: a teller finds an account by number (id, number, owner, type and status only)',
+  lookup.status === 200 && lookup.body.data.id === aliceAcc.id && Object.keys(lookup.body.data).sort().join() === 'accountNumber,accountType,customerId,id,status',
+  lookup.body
+);
+check('...customers cannot use the lookup (403)', (await api('GET', `/api/v1/accounts/lookup?accountNumber=${bobAcc.accountNumber}`, { token: alice.token })).status === 403);
+check(
+  '...an unknown number is 404 and a malformed one 400',
+  (await api('GET', '/api/v1/accounts/lookup?accountNumber=299999999990', { token: teller.token })).status === 404 &&
+    (await api('GET', '/api/v1/accounts/lookup?accountNumber=12ab', { token: teller.token })).status === 400
+);
 check("IDOR: bob cannot read alice's balance (404)", (await api('GET', `/api/v1/transactions/accounts/${aliceAcc.id}/balance`, { token: bob.token })).status === 404);
 const welcome = await waitForEmail(alice.email, /Welcome to BankSphere/);
 check('KAFKA: account.created.v1 -> welcome email to the real owner, account number masked', Boolean(welcome) && /X{8}\d{4}/.test(welcome.text) && !welcome.text.includes(aliceAcc.accountNumber), welcome?.text);
@@ -417,11 +478,22 @@ check('a teller cannot issue their own float (403)', (await api('POST', '/api/v1
 const issue = await api('POST', '/api/v1/transactions/teller/sessions', { token: admin.token, body: { tellerId: teller.id, openingFloatPaise: OPENING_FLOAT.toString() } });
 check('DUAL CONTROL: a supervisor issues the opening float (ISSUED, nothing booked yet)', issue.status === 201 && issue.body.data.status === 'ISSUED', issue.body);
 check('...no cash can be handled before the teller accepts it (409)', (await api('POST', '/api/v1/transactions/deposit', { token: teller.token, headers: idem(), body: { accountId: aliceAcc.id, amountInPaise: '100' } })).status === 409);
+const currentIssued = await api('GET', '/api/v1/transactions/teller/sessions/current', { token: teller.token });
+check(
+  'BLIND FLOAT: the teller sees the ISSUED session without the issued amount or the drawer account',
+  currentIssued.status === 200 && currentIssued.body.data?.status === 'ISSUED' && currentIssued.body.data.openingFloat === null && !('drawerAccountId' in currentIssued.body.data),
+  currentIssued.body
+);
+check('...the current-session endpoint is for tellers only (403)', (await api('GET', '/api/v1/transactions/teller/sessions/current', { token: admin.token })).status === 403);
 const miscount = await api('POST', '/api/v1/transactions/teller/sessions/accept', { token: teller.token, body: { countedFloatPaise: (OPENING_FLOAT - 1n).toString() } });
 check('...the teller must count exactly the issued float (409 FLOAT_MISMATCH)', miscount.status === 409 && miscount.body.error.code === 'FLOAT_MISMATCH', miscount.body);
 const open = await api('POST', '/api/v1/transactions/teller/sessions/accept', { token: teller.token, body: { countedFloatPaise: OPENING_FLOAT.toString() } });
 check('the teller counts and accepts the float: booked vault -> drawer, session OPEN', open.status === 200 && open.body.data.status === 'OPEN', open.body);
 check('only one session per teller per day (409)', (await api('POST', '/api/v1/transactions/teller/sessions', { token: admin2.token, body: { tellerId: teller.id, openingFloatPaise: '0' } })).status === 409);
+check('...after accepting, the teller sees the float they counted', (await api('GET', '/api/v1/transactions/teller/sessions/current', { token: teller.token })).body?.data?.openingFloat === OPENING_FLOAT.toString());
+const supervisorView = (await api('GET', '/api/v1/transactions/teller/sessions?status=OPEN', { token: admin.token })).body?.data?.find((s) => s.id === open.body.data?.id);
+check('DRAWER PRIVACY: a teller cannot read their own drawer balance (404)', Boolean(supervisorView?.drawerAccountId) && (await api('GET', `/api/v1/transactions/accounts/${supervisorView.drawerAccountId}/balance`, { token: teller.token })).status === 404, supervisorView);
+check('...a supervisor can', Boolean(supervisorView) && (await api('GET', `/api/v1/transactions/accounts/${supervisorView.drawerAccountId}/balance`, { token: admin.token })).status === 200);
 const dep = await api('POST', '/api/v1/transactions/deposit', { token: teller.token, headers: idem(), body: { accountId: aliceAcc.id, amountInPaise: '100000' } });
 check('teller deposit within the single-approval limit executes immediately (201)', dep.status === 201 && dep.body.data.status === 'EXECUTED', dep.body);
 check('alice balance = 100000', (await balance(alice.token, aliceAcc.id)) === '100000');
@@ -493,6 +565,12 @@ check('alice enrols MFA', aliceMfa.enableStatus === 200, aliceMfa);
 alice.token = aliceMfa.tokens.accessToken;
 const aliceAddsBob = await api('POST', '/api/v1/transactions/beneficiaries', { token: alice.token, body: { accountNumber: bobAcc.accountNumber, nickname: 'Bob' } });
 check('...a beneficiary added from an MFA session is active immediately', aliceAddsBob.status === 201 && serverDelayMinutes(aliceAddsBob.body.data) < 1, aliceAddsBob.body);
+const payeeMail = await waitForEmail(alice.email, /payee/i);
+check(
+  'PAYEE NOTICE: the customer is emailed whenever a payee is added (account number masked)',
+  Boolean(payeeMail) && payeeMail.text.includes(bobAcc.accountNumber.slice(-4)) && !payeeMail.text.includes(bobAcc.accountNumber),
+  payeeMail?.text
+);
 
 const idemKey = key();
 const sameKey = await Promise.all(Array.from({ length: 10 }, () =>
@@ -531,6 +609,10 @@ check('customer can lower their own daily limit', (await api('PATCH', `/api/v1/a
 const bobCode = await api('POST', '/api/v1/transactions/withdrawal-codes', { token: bob.token, body: { accountId: bobAcc.id, amountInPaise: '1501' } });
 const overLimit = await api('POST', '/api/v1/transactions/withdraw', { token: teller.token, headers: idem(), body: { accountId: bobAcc.id, amountInPaise: '1501', authorizationCode: bobCode.body?.data?.authorizationCode } });
 check('teller withdrawal over the daily limit is rejected (422 DAILY_LIMIT_EXCEEDED)', overLimit.status === 422 && overLimit.body.error.code === 'DAILY_LIMIT_EXCEEDED', overLimit.body);
+const bankLimit = await api('PATCH', `/api/v1/accounts/${bobAcc.id}/daily-limit`, { token: admin.token, body: { dailyLimitPaise: '1000' } });
+check('BANK CEILING: a limit set by an administrator becomes a ceiling', bankLimit.status === 200 && bankLimit.body.data.bankLimitCeilingPaise === '1000', bankLimit.body);
+check('...the owner cannot raise the limit back above it (403)', (await api('PATCH', `/api/v1/accounts/${bobAcc.id}/daily-limit`, { token: bob.token, body: { dailyLimitPaise: '1500' } })).status === 403);
+check('...but can still lower it', (await api('PATCH', `/api/v1/accounts/${bobAcc.id}/daily-limit`, { token: bob.token, body: { dailyLimitPaise: '900' } })).status === 200);
 
 const freeze = await api('PATCH', `/api/v1/accounts/${aliceAcc.id}/status`, { token: alice.token, body: { status: 'FROZEN' } });
 check('customer can freeze own account', freeze.status === 200 && freeze.body.data.status === 'FROZEN', freeze.body);
@@ -539,6 +621,9 @@ check('frozen account cannot send money (ledger enforced)', whileFrozen.status =
 const toFrozen = await api('POST', '/api/v1/transactions/transfer', { token: bob.token, headers: idem(), body: { sourceAccountId: bobAcc.id, destinationAccountId: aliceAcc.id, amountInPaise: '1' } });
 check('a frozen account cannot receive either (generic INVALID_DESTINATION)', toFrozen.status === 422 && toFrozen.body.error.code === 'INVALID_DESTINATION', toFrozen.body);
 check('customer cannot unfreeze (403)', (await api('PATCH', `/api/v1/accounts/${aliceAcc.id}/status`, { token: alice.token, body: { status: 'ACTIVE' } })).status === 403);
+const hold = await api('PATCH', `/api/v1/accounts/${aliceAcc.id}/status`, { token: admin2.token, body: { status: 'FROZEN' } });
+check('BANK HOLD: an administrator can place a hold on an account its owner already froze', hold.status === 200 && hold.body.data.status === 'FROZEN', hold.body);
+check('...and cannot lift that hold themselves (403)', (await api('PATCH', `/api/v1/accounts/${aliceAcc.id}/status`, { token: admin2.token, body: { status: 'ACTIVE' } })).status === 403);
 const adminUnfreeze = await api('PATCH', `/api/v1/accounts/${aliceAcc.id}/status`, { token: admin.token, body: { status: 'ACTIVE' } });
 check('admin can unfreeze', adminUnfreeze.status === 200 && adminUnfreeze.body.data.status === 'ACTIVE', adminUnfreeze.body);
 check('KAFKA: account.status.changed.v1 -> freeze notice email', Boolean(await waitForEmail(alice.email, /your account is now FROZEN/)));
@@ -564,6 +649,7 @@ const alerts = await waitFor(async () => {
 check('KAFKA: fraud-service flagged BOTH sides of the high-value transfer (outbound + inbound)', alerts?.length === 2 && alerts.every((a) => ['HIGH', 'CRITICAL'].includes(a.severity)), alerts);
 const alert = alerts?.[0];
 check('a teller cannot read fraud alerts (403)', (await api('GET', '/api/v1/fraud/alerts', { token: teller.token })).status === 403);
+check('TRIAGE: administrators can read alerts but only fraud analysts can change them (403)', Boolean(alert) && (await api('PATCH', `/api/v1/fraud/alerts/${alert.id}`, { token: admin.token, body: { status: 'UNDER_REVIEW' } })).status === 403);
 const propose = alert && (await api('PATCH', `/api/v1/fraud/alerts/${alert.id}`, { token: analyst.token, body: { status: 'DISMISSED', note: 'customer confirmed' } }));
 check('FOUR-EYES: one analyst can only PROPOSE closing a HIGH alert', propose?.status === 200 && propose.body.data.pendingSecondApproval === true && propose.body.data.status === 'UNDER_REVIEW', propose?.body);
 const selfConfirm = alert && (await api('PATCH', `/api/v1/fraud/alerts/${alert.id}`, { token: analyst.token, body: { status: 'DISMISSED' } }));
@@ -582,6 +668,11 @@ const close = await api('POST', '/api/v1/transactions/teller/sessions/close', { 
 check('BLIND COUNT: the teller closes without ever seeing the expected figure', close.status === 200 && close.body.data.status === 'CLOSED' && !('expectedClosing' in close.body.data) && !('discrepancy' in close.body.data), close.body);
 check('a closed session handles no more cash (409)', (await api('POST', '/api/v1/transactions/deposit', { token: teller.token, headers: idem(), body: { accountId: aliceAcc.id, amountInPaise: '100' } })).status === 409);
 check('the teller cannot sign off their own session (403)', (await api('POST', `/api/v1/transactions/teller/sessions/${open.body.data.id}/sign-off`, { token: teller.token, body: { countedCashPaise: counted.toString() } })).status === 403);
+const redeclare = await api('POST', '/api/v1/transactions/teller/sessions/close', { token: teller.token, body: { countedCashPaise: (counted + 100n).toString() } });
+const redeclareBack = await api('POST', '/api/v1/transactions/teller/sessions/close', { token: teller.token, body: { countedCashPaise: counted.toString() } });
+check('RECOUNT: until sign-off the teller may correct their declared count', redeclare.status === 200 && redeclareBack.status === 200 && redeclareBack.body.data.status === 'CLOSED', [redeclare.body, redeclareBack.body]);
+const closedView = (await api('GET', '/api/v1/transactions/teller/sessions?status=CLOSED', { token: admin.token })).body?.data?.find((s) => s.id === open.body.data.id);
+check("BLIND SIGN-OFF: the supervisor's list hides the teller's declared and expected figures until reconciliation", Boolean(closedView) && closedView.declaredClosing == null && closedView.expectedClosing == null, closedView);
 const recount = await api('POST', `/api/v1/transactions/teller/sessions/${open.body.data.id}/sign-off`, { token: admin.token, body: { countedCashPaise: (counted + 1000n).toString() } });
 check("BLIND COUNT: the supervisor's own count must match the teller's (409 COUNT_MISMATCH)", recount.status === 409 && recount.body.error.code === 'COUNT_MISMATCH', recount.body);
 const signOff = await api('POST', `/api/v1/transactions/teller/sessions/${open.body.data.id}/sign-off`, { token: admin.token, body: { countedCashPaise: counted.toString() } });
