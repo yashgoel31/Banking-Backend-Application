@@ -28,6 +28,7 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
     customerId: 'alice-cust-id',
     status: AccountStatus.ACTIVE,
     dailyLimit: 10000000n,
+    bankLimitCeiling: null,
     version: 3,
     ...overrides,
   });
@@ -251,6 +252,9 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
   });
 
   describe('updateDailyLimit', () => {
+    const limitWrite = () =>
+      mockPrisma.bankAccount.updateMany.mock.calls.map(([args]: any) => args).find((args: any) => args.data.dailyLimit !== undefined);
+
     it('lowering hits the ledger first; customers are capped; admins on their own account are capped too', async () => {
       mockPrisma.bankAccount.findUnique.mockResolvedValue(account());
       await accountService.updateDailyLimit('acc-1', 50000n, alice);
@@ -264,6 +268,58 @@ describe('AccountService (Account Lifecycle, Numbers, and Ownership)', () => {
       await expect(accountService.updateDailyLimit('acc-1', 999999999999n, alice)).rejects.toThrow(ForbiddenError);
       mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ customerId: 'admin-user-id' }));
       await expect(accountService.updateDailyLimit('acc-1', 999999999999n, admin)).rejects.toThrow(ForbiddenError);
+    });
+
+    it('BANK CEILING: a limit set by an administrator becomes a ceiling the owner cannot raise past', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account());
+      await accountService.updateDailyLimit('acc-1', 20000n, admin);
+      expect(limitWrite().data).toEqual({ dailyLimit: 20000n, bankLimitCeiling: 20000n });
+
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ dailyLimit: 20000n, bankLimitCeiling: 20000n }));
+      calls.length = 0;
+      await expect(accountService.updateDailyLimit('acc-1', 10000000n, alice)).rejects.toThrow(ForbiddenError);
+      await expect(accountService.updateDailyLimit('acc-1', 20001n, alice)).rejects.toThrow(ForbiddenError);
+      expect(calls).toEqual([]);
+    });
+
+    it('BANK CEILING: the owner may lower freely and raise back up to the ceiling, never moving the ceiling', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ dailyLimit: 20000n, bankLimitCeiling: 20000n }));
+      await accountService.updateDailyLimit('acc-1', 5000n, alice);
+      expect(limitWrite().data).toEqual({ dailyLimit: 5000n });
+
+      mockPrisma.bankAccount.updateMany.mockClear();
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ dailyLimit: 5000n, bankLimitCeiling: 20000n }));
+      await accountService.updateDailyLimit('acc-1', 20000n, alice);
+      expect(limitWrite().data).toEqual({ dailyLimit: 20000n });
+    });
+
+    it('BANK CEILING: above the customer cap the owner may lower, but raises stay within the cap', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ dailyLimit: 50000000n, bankLimitCeiling: 50000000n }));
+      await accountService.updateDailyLimit('acc-1', 30000000n, alice);
+      expect(limitWrite().data).toEqual({ dailyLimit: 30000000n });
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ dailyLimit: 30000000n, bankLimitCeiling: 50000000n }));
+      await expect(accountService.updateDailyLimit('acc-1', 40000000n, alice)).rejects.toThrow(ForbiddenError);
+    });
+
+    it('BANK CEILING: an admin can raise the ceiling, or impose the current limit as one; not on their own account', async () => {
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ dailyLimit: 20000n, bankLimitCeiling: 20000n }));
+      await accountService.updateDailyLimit('acc-1', 50000000n, admin);
+      expect(limitWrite().data).toEqual({ dailyLimit: 50000000n, bankLimitCeiling: 50000000n });
+      expect(mockPrisma.auditLog.create.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({
+          action: 'DAILY_LIMIT_CHANGED',
+          details: { from: '20000', to: '50000000', bankLimitCeiling: { from: '20000', to: '50000000' } },
+        })
+      );
+
+      // Same limit, but no ceiling yet: recorded (not a no-op), so the owner can no longer raise it
+      mockPrisma.bankAccount.updateMany.mockClear();
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account());
+      await accountService.updateDailyLimit('acc-1', 10000000n, admin);
+      expect(limitWrite().data).toEqual({ dailyLimit: 10000000n, bankLimitCeiling: 10000000n });
+
+      mockPrisma.bankAccount.findUnique.mockResolvedValue(account({ customerId: 'admin-user-id', dailyLimit: 20000n, bankLimitCeiling: 20000n }));
+      await expect(accountService.updateDailyLimit('acc-1', 30000n, admin)).rejects.toThrow(ForbiddenError);
     });
   });
 

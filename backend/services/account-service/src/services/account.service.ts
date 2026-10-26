@@ -284,8 +284,10 @@ export class AccountService {
   }
 
   /**
-   * Changes the per-day outgoing limit enforced by the ledger. Customers can set any value up to the
-   * customer cap; only an administrator (on someone else's account) can go above it.
+   * Changes the per-day outgoing limit enforced by the ledger. A limit set by an administrator (on someone
+   * else's account, at any positive value) becomes the account's bank ceiling. The owner may always lower
+   * the limit, but raise it only up to the customer cap and that ceiling, so a reduction imposed by the
+   * bank can't simply be undone.
    */
   public async updateDailyLimit(
     accountId: string,
@@ -300,8 +302,19 @@ export class AccountService {
     if (account.status === AccountStatus.CLOSED) {
       throw new ConflictError('Cannot change limits on a closed account');
     }
-    this.assertDailyLimitAllowed(dailyLimit, isAdmin);
-    if (dailyLimit === account.dailyLimit) return account;
+    if (dailyLimit <= 0n) {
+      throw new BadRequestError('Daily limit must be a positive amount in paise');
+    }
+    if (!isAdmin && dailyLimit > account.dailyLimit) {
+      this.assertDailyLimitAllowed(dailyLimit, false);
+      if (account.bankLimitCeiling !== null && dailyLimit > account.bankLimitCeiling) {
+        throw new ForbiddenError(
+          `This account's daily limit is capped by the bank at ${account.bankLimitCeiling.toString()} paise; raising it further requires bank approval`
+        );
+      }
+    }
+    const setsCeiling = isAdmin && account.bankLimitCeiling !== dailyLimit;
+    if (dailyLimit === account.dailyLimit && !setsCeiling) return account;
 
     const version = await this.reserveVersion(accountId, account.version);
     const ledgerState = { isActive: account.status === AccountStatus.ACTIVE, dailyLimitPaise: dailyLimit.toString(), version };
@@ -310,12 +323,18 @@ export class AccountService {
       await this.pushToLedger(accountId, ledgerState);
     }
     const updated = await this.prisma.$transaction(async (tx) => {
-      const cas = await tx.bankAccount.updateMany({ where: { id: accountId, version }, data: { dailyLimit } });
+      const cas = await tx.bankAccount.updateMany({
+        where: { id: accountId, version },
+        data: { dailyLimit, ...(isAdmin && { bankLimitCeiling: dailyLimit }) },
+      });
       if (cas.count !== 1) throw new ConflictError('Account changed concurrently, please retry');
       const result = await tx.bankAccount.findUniqueOrThrow({ where: { id: accountId } });
       await this.audit(tx, actor.id, 'DAILY_LIMIT_CHANGED', accountId, {
         from: account.dailyLimit.toString(),
         to: dailyLimit.toString(),
+        ...(setsCeiling && {
+          bankLimitCeiling: { from: account.bankLimitCeiling?.toString() ?? null, to: dailyLimit.toString() },
+        }),
       });
       return result;
     });
