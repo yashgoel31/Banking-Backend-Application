@@ -41,20 +41,49 @@ export interface LedgerPolicy {
   stepUpMaxAgeSeconds: number;
   /** A newly enrolled second factor only counts for step-up after this many hours */
   mfaFactorMinAgeHours: number;
+  /** Beneficiary add attempts (adds, re-adds, failed lookups) per customer per rolling 24 hours */
+  maxNewBeneficiariesPerDay: number;
+}
+
+/**
+ * Policy numbers (and the service's other numeric settings) come from the environment. Unset means the
+ * default; anything else must be a plain whole number within range. An empty string, a typo or a negative
+ * value is a configuration error that stops the service at startup, instead of a 0 that silently disables
+ * a control or a NaN that fails every request.
+ */
+export function envNumber(name: string, fallback: number, min: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = raw.trim();
+  if (!/^\d{1,15}$/.test(value) || Number(value) < min) {
+    throw new Error(`Invalid ${name}=${JSON.stringify(raw)}: expected a whole number >= ${min}`);
+  }
+  return Number(value);
+}
+
+function policyPaise(name: string, fallback: bigint, min: bigint): bigint {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = raw.trim();
+  if (!/^\d{1,18}$/.test(value) || BigInt(value) < min) {
+    throw new Error(`Invalid ${name}=${JSON.stringify(raw)}: expected a whole number of paise >= ${min}`);
+  }
+  return BigInt(value);
 }
 
 export const defaultLedgerPolicy = (): LedgerPolicy => ({
-  singleApprovalLimit: BigInt(process.env.CASH_SINGLE_APPROVAL_LIMIT_PAISE || '20000000'), // ₹2,00,000
-  tellerDailyLimit: BigInt(process.env.TELLER_DAILY_LIMIT_PAISE || '100000000'), // ₹10,00,000
-  customerDailyOutflowLimit: BigInt(process.env.CUSTOMER_DAILY_OUTFLOW_LIMIT_PAISE || '50000000'), // ₹5,00,000
-  approvalTtlHours: Number(process.env.CASH_APPROVAL_TTL_HOURS || 24),
-  stepUpThreshold: BigInt(process.env.STEP_UP_THRESHOLD_PAISE || '10000000'), // ₹1,00,000
-  beneficiaryCoolingMinutes: Number(process.env.BENEFICIARY_COOLING_MINUTES ?? 60),
-  newBeneficiaryLimit: BigInt(process.env.NEW_BENEFICIARY_LIMIT_PAISE || '5000000'), // ₹50,000
-  withdrawalCodeTtlMinutes: Number(process.env.WITHDRAWAL_CODE_TTL_MINUTES || 15),
-  withdrawalCodeStepUpThreshold: BigInt(process.env.WITHDRAWAL_CODE_STEP_UP_PAISE || '2500000'), // ₹25,000
-  stepUpMaxAgeSeconds: Number(process.env.STEP_UP_MAX_AGE_SECONDS || 300),
-  mfaFactorMinAgeHours: Number(process.env.MFA_FACTOR_MIN_AGE_HOURS ?? 24),
+  singleApprovalLimit: policyPaise('CASH_SINGLE_APPROVAL_LIMIT_PAISE', 20_000_000n, 0n), // ₹2,00,000
+  tellerDailyLimit: policyPaise('TELLER_DAILY_LIMIT_PAISE', 100_000_000n, 0n), // ₹10,00,000
+  customerDailyOutflowLimit: policyPaise('CUSTOMER_DAILY_OUTFLOW_LIMIT_PAISE', 50_000_000n, 1n), // ₹5,00,000
+  approvalTtlHours: envNumber('CASH_APPROVAL_TTL_HOURS', 24, 1),
+  stepUpThreshold: policyPaise('STEP_UP_THRESHOLD_PAISE', 10_000_000n, 0n), // ₹1,00,000
+  beneficiaryCoolingMinutes: envNumber('BENEFICIARY_COOLING_MINUTES', 60, 0),
+  newBeneficiaryLimit: policyPaise('NEW_BENEFICIARY_LIMIT_PAISE', 5_000_000n, 0n), // ₹50,000
+  withdrawalCodeTtlMinutes: envNumber('WITHDRAWAL_CODE_TTL_MINUTES', 15, 1),
+  withdrawalCodeStepUpThreshold: policyPaise('WITHDRAWAL_CODE_STEP_UP_PAISE', 2_500_000n, 0n), // ₹25,000
+  stepUpMaxAgeSeconds: envNumber('STEP_UP_MAX_AGE_SECONDS', 300, 1),
+  mfaFactorMinAgeHours: envNumber('MFA_FACTOR_MIN_AGE_HOURS', 24, 0),
+  maxNewBeneficiariesPerDay: envNumber('MAX_NEW_BENEFICIARIES_PER_DAY', 10, 1),
 });
 
 /** Recent TOTP verification on an established factor (see hasRecentStrongAuth) */
@@ -196,6 +225,22 @@ export async function stageTransactionEvent(tx: TxClient, transactionId: string,
       status: 'PENDING',
     },
   });
+}
+
+/**
+ * A refusal that must leave a durable trace (an audit row, a recorded dispute). Thrown inside a
+ * transaction, those writes would roll back with it; returned instead, the transaction commits them and
+ * `commitThenRefuse` throws the error once the commit is done. Only for transactions that have written
+ * nothing else by the time they refuse.
+ */
+export class Refusal {
+  constructor(readonly error: Error) {}
+}
+
+export async function commitThenRefuse<T>(transaction: Promise<T | Refusal>): Promise<T> {
+  const result = await transaction;
+  if (result instanceof Refusal) throw result.error;
+  return result;
 }
 
 export async function audit(

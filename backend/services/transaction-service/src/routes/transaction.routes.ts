@@ -14,7 +14,9 @@ export function createTransactionRouter(controller: TransactionController, authe
   router.delete('/beneficiaries/:id', requireRoles('CUSTOMER'), controller.removeBeneficiary);
   router.post('/withdrawal-codes', requireRoles('CUSTOMER'), controller.createWithdrawalCode);
 
-  // Teller (maker): branch cash, inside a business-day session, never on their own accounts
+  // Teller (maker): branch cash, inside a business-day session, never on their own accounts.
+  // Literal /teller/sessions/* paths stay above the parameterised /teller/sessions/:id routes.
+  router.get('/teller/sessions/current', requireRoles('TELLER'), controller.currentSession);
   router.post('/teller/sessions/accept', requireRoles('TELLER'), controller.acceptFloat);
   router.post('/teller/sessions/close', requireRoles('TELLER'), controller.closeSession);
   router.post('/deposit', requireRoles('TELLER'), controller.deposit);
@@ -25,7 +27,7 @@ export function createTransactionRouter(controller: TransactionController, authe
   router.post('/teller/sessions', requireRoles('BANK_ADMIN'), controller.issueFloat);
   router.post('/teller/sessions/:id/cancel', requireRoles('BANK_ADMIN'), controller.cancelFloat);
   router.post('/teller/sessions/:id/sign-off', requireRoles('BANK_ADMIN'), controller.signOffSession);
-  router.get('/cash-operations', requireRoles('TELLER', 'BANK_ADMIN', 'SUPPORT'), controller.listCashOperations);
+  router.get('/cash-operations', requireRoles('TELLER', 'BANK_ADMIN', 'SUPPORT'), controller.listCashOperations); // tellers: their own
   router.post('/cash-operations/:cashOperationId/approve', requireRoles('BANK_ADMIN'), controller.approveCashOperation);
   router.post('/cash-operations/:cashOperationId/reject', requireRoles('BANK_ADMIN'), controller.rejectCashOperation);
 
