@@ -60,6 +60,17 @@ export interface AuthResponse {
   tokens: GeneratedTokens;
 }
 
+/** A row of the staff user directory (GET /admin/users) */
+export interface DirectoryUser {
+  id: string;
+  email: string;
+  role: Role;
+  isActive: boolean;
+  isEmailVerified: boolean;
+  mfaEnabled: boolean;
+  createdAt: Date;
+}
+
 export interface MfaChallengeResponse {
   mfaRequired: true;
   challengeToken: string;
@@ -109,6 +120,8 @@ const REUSE_MESSAGE =
   'Security Alert: Compromised refresh token detected. All active sessions have been terminated. Please log in again.';
 /** A rotated refresh token presented again within this window is a concurrent refresh, not theft */
 const ROTATION_GRACE_MS = 10_000;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const normaliseEmail = (email: string) => email.trim().toLowerCase();
 const newOneTimeToken = () => crypto.randomBytes(32).toString('base64url');
@@ -903,6 +916,48 @@ export class AuthService {
       passwordChangedAt: user.passwordChangedAt,
       createdAt: user.createdAt,
     };
+  }
+
+  /**
+   * Staff user directory (BANK_ADMIN, SUPPORT): newest first, optionally by role and by `q` (email contains,
+   * case-insensitive, or the exact id when `q` is a UUID). Only directory fields are ever read or returned,
+   * never hashes or MFA secrets; every listing is audited with the ids it revealed.
+   */
+  public async listUsers(
+    actor: AuthenticatedUser,
+    filter: { role?: Role; q?: string; limit: number; offset: number }
+  ): Promise<DirectoryUser[]> {
+    const where: Prisma.UserWhereInput = filter.role ? { role: filter.role } : {};
+    const q = filter.q?.trim();
+    if (q) {
+      const match: Prisma.UserWhereInput[] = [{ email: { contains: q, mode: 'insensitive' } }];
+      if (UUID.test(q)) match.push({ id: q.toLowerCase() });
+      where.OR = match;
+    }
+    const users = await this.prisma.user.findMany({
+      where,
+      select: { id: true, email: true, role: true, isActive: true, isEmailVerified: true, mfaEnabled: true, createdAt: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // id: a stable order across pages
+      take: filter.limit,
+      skip: filter.offset,
+    });
+    await this.audit(this.prisma, actor.id, 'ADMIN_USERS_LISTED', null, {
+      role: filter.role ?? null,
+      q: q || null,
+      limit: filter.limit,
+      offset: filter.offset,
+      userIds: users.map((u) => u.id),
+    });
+    // Built field by field, so nothing beyond the directory fields can reach the response
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      isActive: u.isActive,
+      isEmailVerified: u.isEmailVerified,
+      mfaEnabled: u.mfaEnabled,
+      createdAt: u.createdAt,
+    }));
   }
 
   /**

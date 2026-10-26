@@ -1024,6 +1024,66 @@ describe('Auth HTTP routes', () => {
   });
 });
 
+describe('GET /api/v1/auth/admin/users (staff user directory)', () => {
+  let prisma: any;
+  let app: express.Express;
+  const staffToken = (role: string, mfa = true) => signAccessToken({ sub: `${role}-1`, email: 'staff@bank.com', role: role as any, tokenVersion: 0, mfa, sessionId: 's1' });
+  const list = (query: string, role = 'BANK_ADMIN', mfa = true) =>
+    request(app).get(`/api/v1/auth/admin/users${query}`).set('Authorization', `Bearer ${staffToken(role, mfa)}`);
+  const createdAt = new Date('2026-10-01T10:00:00.000Z');
+
+  beforeEach(() => {
+    prisma = buildMockPrisma();
+    app = createApp(prisma, { tokenState: new InMemoryTokenStateStore(), security: new InMemoryAuthSecurityStore(), mailer: new ConsoleMailer() }).app;
+    // Even if the query returned secrets, they must never reach the response
+    prisma.user.findMany.mockResolvedValue([
+      { ...activeUser({ id: 'u7', email: 'ravi@example.com', mfaEnabled: true }), createdAt, passwordHash: 'argon2-hash', mfaSecretEnc: 'enc', mfaPendingSecretEnc: 'enc2' },
+    ]);
+  });
+
+  it('is for BANK_ADMIN and SUPPORT with an MFA session only', async () => {
+    expect((await list('')).status).toBe(200);
+    expect((await list('', 'SUPPORT')).status).toBe(200);
+    for (const role of ['TELLER', 'KYC_OFFICER', 'FRAUD_ANALYST', 'CUSTOMER']) {
+      expect([role, (await list('', role, role === 'CUSTOMER' ? false : true)).status]).toEqual([role, 403]);
+    }
+    expect((await list('', 'SUPPORT', false)).body.error.code).toBe('MFA_REQUIRED');
+    expect((await request(app).get('/api/v1/auth/admin/users')).status).toBe(401);
+  });
+
+  it('returns only directory fields, newest first, with pagination, and audits the listing', async () => {
+    const res = await list('?limit=5&offset=10');
+    expect(res.body).toEqual({
+      success: true,
+      data: [{ id: 'u7', email: 'ravi@example.com', role: 'CUSTOMER', isActive: true, isEmailVerified: true, mfaEnabled: true, createdAt: createdAt.toISOString() }],
+      pagination: { limit: 5, offset: 10 },
+    });
+    const args = prisma.user.findMany.mock.calls[0][0];
+    expect(args).toEqual(expect.objectContaining({ where: {}, take: 5, skip: 10 }));
+    expect(args.orderBy[0]).toEqual({ createdAt: 'desc' });
+    expect(Object.keys(args.select).sort()).toEqual(['createdAt', 'email', 'id', 'isActive', 'isEmailVerified', 'mfaEnabled', 'role']);
+    expect(prisma.auditLog.create.mock.calls[0][0].data).toEqual(
+      expect.objectContaining({ actorId: 'BANK_ADMIN-1', action: 'ADMIN_USERS_LISTED', details: expect.objectContaining({ userIds: ['u7'] }) })
+    );
+  });
+
+  it('filters by role and by q: case-insensitive email search, or an exact id when q is a UUID', async () => {
+    await list('?role=TELLER&q=%20Ravi%20');
+    expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({ role: 'TELLER', OR: [{ email: { contains: 'Ravi', mode: 'insensitive' } }] });
+    const id = '8F14E45F-CEEA-467F-A0E6-7DFE2A1B3C4D';
+    await list(`?q=${id}`);
+    expect(prisma.user.findMany.mock.calls[1][0].where).toEqual({ OR: [{ email: { contains: id, mode: 'insensitive' } }, { id: id.toLowerCase() }] });
+  });
+
+  it('caps pagination and validates the filters', async () => {
+    await list('?limit=100000&offset=99999999');
+    expect(prisma.user.findMany.mock.calls[0][0]).toEqual(expect.objectContaining({ take: 100, skip: 10_000 }));
+    expect((await list('?role=ROOT')).status).toBe(400);
+    expect((await list(`?q=${'a'.repeat(255)}`)).status).toBe(400);
+    expect((await list('?role=TELLER&role=SUPPORT')).status).toBe(400);
+  });
+});
+
 describe('Cookie session transport (X-Session-Transport: cookie)', () => {
   const COOKIE = { 'X-Session-Transport': 'cookie' };
   let prisma: any;
