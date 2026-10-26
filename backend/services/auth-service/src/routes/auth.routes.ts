@@ -48,6 +48,8 @@ export function createAuthRouter(
 
   // Staff administration (BANK_ADMIN with an MFA session). Staff changes are four-eyes requests.
   const admin = [auth.authenticate, requireRoles('BANK_ADMIN')];
+  // Read-only user directory: also for SUPPORT
+  router.get('/admin/users', auth.authenticate, requireRoles('BANK_ADMIN', 'SUPPORT'), controller.listUsers);
   router.post('/admin/users', ...admin, controller.createStaffUser);
   router.patch('/admin/users/:userId/status', ...admin, controller.setUserStatus);
   router.post('/admin/users/:userId/mfa/reset', ...admin, controller.resetUserMfa);

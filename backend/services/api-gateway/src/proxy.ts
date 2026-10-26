@@ -82,6 +82,15 @@ export function createProxy(route: RouteTarget, timeoutMs = 15_000): RequestHand
           if (value !== undefined && !HOP_BY_HOP.has(name)) responseHeaders[name] = value;
         }
         res.writeHead(upstreamRes.statusCode || 502, responseHeaders);
+        // pipe() doesn't propagate a source failure: if the upstream dies mid-body the client would wait
+        // forever. Headers are already sent, so the only honest signal left is to abort the client response.
+        upstreamRes.on('error', (err) => {
+          logger.warn({ err: err.message, upstream: route.name, correlationId: req.correlationId }, 'Upstream response aborted');
+          res.destroy();
+        });
+        upstreamRes.on('close', () => {
+          if (!upstreamRes.complete) res.destroy();
+        });
         upstreamRes.pipe(res);
       }
     );

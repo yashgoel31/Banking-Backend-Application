@@ -64,6 +64,7 @@ model User {
   verifyTokens      EmailVerificationToken[]
   enrolmentTokens   EnrolmentToken[]
 
+  @@index([createdAt]) // staff user directory, newest first
   @@map("users")
 }
 

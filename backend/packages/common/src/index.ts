@@ -18,4 +18,6 @@ export * from './auth/token-state';
 export * from './mail/mailer';
 export * from './outbox/outbox-relay';
 export * from './http/server';
+export * from './http/network';
+export * from './http/cookies';
 export * from './utils/job-lease';
