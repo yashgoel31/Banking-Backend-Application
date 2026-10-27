@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { format } from 'date-fns';
-import { KeyRound, LogOut, MonitorSmartphone, ShieldCheck, ShieldOff, UserRound } from 'lucide-react';
+import { LogOut, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useAuth, useUser } from '@/lib/auth/AuthProvider';
 import { isStaffRole } from '@/lib/auth/session';
 import { describeError, isApiError } from '@/lib/api/errors';
@@ -21,21 +21,18 @@ import { ErrorState } from '@/components/ui/data';
 import { PasswordChecklist } from '@/features/auth/components/PasswordFields';
 import { AuthenticatorSetup } from './AuthenticatorSetup';
 
-function Section({ icon, title, description, children, aside }: { icon: ReactNode; title: string; description: string; children: ReactNode; aside?: ReactNode }) {
+function Section({ title, description, children, aside }: { title: string; description: string; children: ReactNode; aside?: ReactNode }) {
   return (
     <Card>
       <section aria-labelledby={`sec-${title}`}>
         <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
-          <div className="flex gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary [&_svg]:size-[18px]">{icon}</span>
-            <div className="space-y-1">
-              <CardTitle id={`sec-${title}`}>{title}</CardTitle>
-              <CardDescription>{description}</CardDescription>
-            </div>
+          <div className="space-y-1">
+            <CardTitle id={`sec-${title}`}>{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
           </div>
           {aside}
         </CardHeader>
-        <CardContent>{children}</CardContent>
+        <CardContent className="pt-3">{children}</CardContent>
       </section>
     </Card>
   );
@@ -72,7 +69,7 @@ function ChangePassword() {
   });
 
   return (
-    <form onSubmit={onSubmit} className="grid max-w-md gap-4" noValidate>
+    <form onSubmit={onSubmit} className="grid max-w-md gap-5" noValidate>
       {problem ? (
         <Callout tone="danger" title={problem.title}>
           {problem.description}
@@ -88,7 +85,7 @@ function ChangePassword() {
       <Field label="Confirm new password" error={errors.confirm?.message}>
         {(p) => <PasswordInput {...p} {...form.register('confirm')} autoComplete="new-password" />}
       </Field>
-      <div>
+      <div className="pt-1">
         <Button type="submit" loading={isSubmitting}>
           Update password
         </Button>
@@ -159,25 +156,25 @@ function TwoFactor({ enabled }: { enabled: boolean }) {
   if (enabled) {
     return (
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-success-soft/60 p-4">
-          <div className="flex items-center gap-3">
-            <ShieldCheck className="size-5 text-success" aria-hidden="true" />
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="mt-0.5 size-[22px] shrink-0 text-success" strokeWidth={1.75} aria-hidden="true" />
             <div>
-              <p className="text-sm font-medium">Authenticator app is on</p>
-              <p className="text-[13px] text-muted-foreground">
+              <p className="text-[15px] font-medium">Authenticator app is on</p>
+              <p className="text-[13px] leading-[18px] text-muted-foreground">
                 {user.mfaSince ? `Added ${format(new Date(user.mfaSince * 1000), 'd MMM yyyy')}. ` : ''}
                 Codes are required at sign-in and for high-value actions.
               </p>
             </div>
           </div>
           {staff ? null : (
-            <Button variant="outline" size="sm" onClick={() => setDisabling(true)}>
+            <Button variant="secondary" size="sm" onClick={() => setDisabling(true)}>
               <ShieldOff aria-hidden="true" /> Turn off
             </Button>
           )}
         </div>
         {staff ? (
-          <p className="text-[13px] text-muted-foreground">
+          <p className="border-t pt-4 text-[13px] leading-[18px] text-muted-foreground">
             Two-factor authentication is required for all staff. If you lose your phone, two administrators must approve a reset.
           </p>
         ) : null}
@@ -202,12 +199,15 @@ function TwoFactor({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed p-4">
-      <div className="max-w-lg">
-        <p className="text-sm font-medium">Protect your money with an authenticator app</p>
-        <p className="text-[13px] text-muted-foreground">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex max-w-lg items-start gap-3">
+        <ShieldAlert className="mt-0.5 size-[22px] shrink-0 text-warning" strokeWidth={1.75} aria-hidden="true" />
+        <div>
+        <p className="text-[15px] font-medium">Protect your money with an authenticator app</p>
+        <p className="text-[13px] leading-[18px] text-muted-foreground">
           Needed for transfers of ₹1,00,000 or more, instant payees and large cash withdrawals.
         </p>
+        </div>
       </div>
       <Button onClick={() => setSettingUp(true)}>Set up authenticator</Button>
     </div>
@@ -221,15 +221,14 @@ export default function SecurityPage() {
   const me = useQuery({ queryKey: qk.me, queryFn: () => api.auth.me() });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader title="Security" description="Manage how you sign in and keep your account protected." />
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="space-y-6">
-          <Section icon={<KeyRound aria-hidden="true" />} title="Password" description="Use a long, unique password. Changing it signs out your other devices.">
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12 lg:gap-6">
+        <div className="space-y-5 lg:col-span-8 lg:space-y-6">
+          <Section title="Password" description="Use a long, unique password. Changing it signs out your other devices.">
             <ChangePassword />
           </Section>
           <Section
-            icon={<ShieldCheck aria-hidden="true" />}
             title="Two-factor authentication"
             description="A second step at sign-in using codes from your phone."
             aside={me.data ? <Badge tone={me.data.mfaEnabled ? 'success' : 'warning'} dot>{me.data.mfaEnabled ? 'On' : 'Off'}</Badge> : null}
@@ -237,11 +236,11 @@ export default function SecurityPage() {
             {me.isPending ? <Skeleton className="h-20 w-full" /> : me.isError ? <ErrorState error={me.error} onRetry={() => void me.refetch()} /> : <TwoFactor enabled={me.data.mfaEnabled} />}
           </Section>
         </div>
-        <div className="space-y-6">
-          <Section icon={<UserRound aria-hidden="true" />} title="Account" description="Your sign-in identity.">
+        <div className="space-y-5 lg:col-span-4 lg:space-y-6">
+          <Section title="Account" description="Your sign-in identity.">
             <DescriptionList
               items={[
-                { label: 'Email', value: <span className="break-all">{user.email}</span> },
+                { label: 'Email', value: user.email },
                 { label: 'Role', value: ROLE_LABEL[user.role] },
                 { label: 'Member since', value: me.data ? format(new Date(me.data.createdAt), 'd MMM yyyy') : '—' },
                 {
@@ -251,9 +250,9 @@ export default function SecurityPage() {
               ]}
             />
           </Section>
-          <Section icon={<MonitorSmartphone aria-hidden="true" />} title="This device" description="Sessions end automatically after inactivity.">
+          <Section title="This device" description="Sessions end automatically after inactivity.">
             <Button
-              variant="outline"
+              variant="secondary"
               block
               onClick={async () => {
                 await signOut();

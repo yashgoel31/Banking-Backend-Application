@@ -59,6 +59,7 @@ test('administrators sign in with their authenticator codes', async () => {
   await leadPage.goto('/login');
   await expect(leadPage.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
   await shot(leadPage, '01-sign-in');
+  await darkShot(leadPage, '01-sign-in-dark');
   const mobile = await persona('mobile-signin', { width: 390, height: 844 });
   await mobile.goto('/login');
   await shot(mobile, '01-sign-in-mobile');
@@ -360,12 +361,26 @@ test('documentation screenshots: dashboards, statements, staff consoles, dark mo
   await shot(customerPage, '07-account-statement');
   await customerPage.goto('/profile');
   await shot(customerPage, '12-profile-kyc-verified');
+  await customerPage.goto('/accounts');
+  await shot(customerPage, '06c-accounts');
+
+  // Phones are first-class: the same customer on a 390 px screen, with the tab bar
   await customerPage.setViewportSize({ width: 390, height: 844 });
   await customerPage.goto('/dashboard');
   await expect(customerPage.getByRole('region', { name: 'Recent activity' })).toBeVisible();
   await shot(customerPage, '06-customer-dashboard-mobile');
+  await darkShot(customerPage, '06-customer-dashboard-mobile-dark');
+  await customerPage.goto('/accounts');
+  await shot(customerPage, '06c-accounts-mobile');
+  await customerPage.goto(`/accounts/${savings.id}`);
+  await expect(customerPage.getByText('Salary credit').first()).toBeVisible();
+  await shot(customerPage, '07-account-statement-mobile');
   await customerPage.goto('/transfer');
   await shot(customerPage, '08-transfer-mobile');
+  await customerPage.goto('/payees');
+  await shot(customerPage, '10-payees-mobile');
+  await customerPage.goto('/settings/security');
+  await shot(customerPage, '13-security-mobile');
   await customerPage.setViewportSize({ width: 1440, height: 900 });
 
   const lead = pages.lead!;
@@ -378,6 +393,24 @@ test('documentation screenshots: dashboards, statements, staff consoles, dark mo
   await shot(lead, '21-directory');
   await lead.goto('/notifications');
   await shot(lead, '22-notifications');
+  await lead.setViewportSize({ width: 390, height: 844 });
+  await lead.goto('/overview');
+  await expect(lead.getByRole('region', { name: 'Needs your attention' })).toBeVisible();
+  await shot(lead, '04-admin-overview-mobile');
+  await lead.setViewportSize({ width: 1440, height: 900 });
+
+  const analyst = pages.fraud!;
+  await analyst.setViewportSize({ width: 390, height: 844 });
+  await analyst.goto('/fraud');
+  await expect(analyst.getByText(/threshold|high-value|2,50,000/i).first()).toBeVisible();
+  await shot(analyst, '19-fraud-alerts-mobile');
+  await analyst.setViewportSize({ width: 1440, height: 900 });
+
+  const kyc = pages.kyc!;
+  await kyc.setViewportSize({ width: 390, height: 844 });
+  await kyc.goto('/kyc');
+  await shot(kyc, '17-kyc-queue-mobile');
+  await kyc.setViewportSize({ width: 1440, height: 900 });
 
   const teller = pages.teller!;
   await teller.goto('/teller/operations');

@@ -105,9 +105,9 @@ describe('TellerSessionsPage — list', () => {
     renderPage();
     const table = await screen.findByRole('table', { name: 'Teller sessions' });
     expect(await within(table).findByText('Short by ₹200.00')).toBeInTheDocument();
-    expect(within(table).getByText('-₹200.00')).toBeInTheDocument();
+    // The words carry the sign; the figure isn't repeated with one
+    expect(within(table).queryByText('-₹200.00')).not.toBeInTheDocument();
     expect(within(table).getByText('Over by ₹150.00')).toBeInTheDocument();
-    expect(within(table).getByText('+₹150.00')).toBeInTheDocument();
     expect(within(table).getByText('Balanced')).toBeInTheDocument();
     expect(within(table).getAllByText(/declared ₹73,000\.00/i)).toHaveLength(3);
     expect(within(table).getByText(/expected ₹73,200\.00/i)).toBeInTheDocument();
@@ -277,7 +277,8 @@ describe('TellerSessionsPage — cancel and sign off', () => {
     expect(await within(dialog).findByText('Enter an amount')).toBeInTheDocument();
     await user.type(within(dialog).getByLabelText('Cash counted'), '73,000');
     await user.click(within(dialog).getByRole('button', { name: 'Continue' }));
-    expect(await within(dialog).findByText(/you counted ₹73,000\.00/i)).toBeInTheDocument();
+    expect(await within(dialog).findByText('You counted')).toBeInTheDocument();
+    expect(within(dialog).getByText('₹73,000.00')).toBeInTheDocument();
     expect(within(dialog).getByText(/can.t be undone/i)).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Sign off' }));
     await waitFor(() => expect(body).toEqual({ countedCashPaise: '7300000' }));

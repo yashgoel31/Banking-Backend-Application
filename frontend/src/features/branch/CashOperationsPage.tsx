@@ -6,7 +6,7 @@ import type { CashOperation, CashOperationStatus } from '@/lib/api/types';
 import { formatPaise } from '@/lib/money';
 import { qk } from '@/lib/query';
 import { Button } from '@/components/ui/button';
-import { DataTable, Pagination, type Column } from '@/components/ui/data';
+import { Pagination } from '@/components/ui/data';
 import { Amount, Callout, Card, PageHeader, StatusBadge } from '@/components/ui/primitives';
 import {
   CASH_TYPE_LABEL,
@@ -18,6 +18,7 @@ import {
   type StatusTab,
 } from './components/cash';
 import { AccountCell, CashDecisionDialog, type Decision } from './components/CashDecision';
+import { RowTable, type RowColumn } from './components/RowTable';
 
 type Filter = 'ALL' | CashOperationStatus;
 
@@ -52,44 +53,73 @@ export default function CashOperationsPage() {
     refetchInterval: filter === 'PENDING_APPROVAL' ? 30_000 : false,
   });
 
-  const columns: Column<CashOperation>[] = [
-    { key: 'type', header: 'Type', cell: (op) => <span className="font-medium">{CASH_TYPE_LABEL[op.type]}</span> },
-    { key: 'amount', header: 'Amount', align: 'right', cell: (op) => <Amount paise={op.amountInPaise} /> },
-    { key: 'account', header: 'Account', cell: (op) => <AccountCell accountId={op.accountId} /> },
+  const pendingTab = filter === 'PENDING_APPROVAL';
+  const columns: RowColumn<CashOperation>[] = [
+    { key: 'type', header: 'Type', phone: 'title', cell: (op) => <span className="font-medium tracking-[-0.01em]">{CASH_TYPE_LABEL[op.type]}</span> },
+    { key: 'account', header: 'Account', phone: 'detail', cell: (op) => <AccountCell accountId={op.accountId} /> },
     {
       key: 'requestedBy',
       header: 'Requested by',
-      hideOnMobile: true,
-      cell: (op) => <span className="break-all">{tellers.label(op.requestedBy)}</span>,
+      // Phones keep the row to one detail line; the approval dialog names the requester
+      phone: 'hidden',
+      cell: (op) => <span className="[overflow-wrap:anywhere]">{tellers.label(op.requestedBy)}</span>,
     },
-    { key: 'created', header: 'Created', hideOnMobile: true, cell: (op) => <span className="whitespace-nowrap tnum">{formatDateTime(op.createdAt)}</span> },
-    ...(filter === 'PENDING_APPROVAL'
+    {
+      key: 'created',
+      header: 'Created',
+      phone: 'detail',
+      cell: (op) => <span className="whitespace-nowrap tnum md:text-muted-foreground">{formatDateTime(op.createdAt)}</span>,
+    },
+    ...(pendingTab
       ? []
       : [
-          { key: 'status', header: 'Status', cell: (op: CashOperation) => <StatusBadge status={op.status} /> },
+          { key: 'status', header: 'Status', phone: 'detail' as const, cell: (op: CashOperation) => <StatusBadge status={op.status} /> },
           {
             key: 'decided',
             header: 'Decided',
-            hideOnMobile: true,
+            phone: 'hidden' as const,
             cell: (op: CashOperation) =>
-              op.decidedAt ? <span className="whitespace-nowrap tnum">{formatDateTime(op.decidedAt)}</span> : <span className="text-muted-foreground">—</span>,
+              op.decidedAt ? (
+                <span className="whitespace-nowrap text-muted-foreground tnum">{formatDateTime(op.decidedAt)}</span>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              ),
           },
         ]),
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      phone: 'end',
+      cell: (op) => <Amount paise={op.amountInPaise} className="font-semibold" />,
+    },
     ...(canAct
       ? [
           {
             key: 'actions',
             header: <span className="sr-only">Actions</span>,
             align: 'right' as const,
+            phone: 'action' as const,
             cell: (op: CashOperation) => {
               if (op.status !== 'PENDING_APPROVAL') return null;
               const what = `${CASH_TYPE_LABEL[op.type].toLowerCase()} of ${formatPaise(op.amountInPaise)}`;
               return (
-                <div className="flex justify-end gap-2">
-                  <Button size="sm" variant="outline" aria-label={`Reject ${what}`} onClick={() => setDecision({ kind: 'reject', operation: op })}>
+                <div className="grid grid-cols-2 gap-2 md:flex md:justify-end">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="max-md:h-11 max-md:text-[15px]"
+                    aria-label={`Reject ${what}`}
+                    onClick={() => setDecision({ kind: 'reject', operation: op })}
+                  >
                     Reject
                   </Button>
-                  <Button size="sm" variant="success" aria-label={`Approve ${what}`} onClick={() => setDecision({ kind: 'approve', operation: op })}>
+                  <Button
+                    size="sm"
+                    className="max-md:h-11 max-md:text-[15px]"
+                    aria-label={`Approve ${what}`}
+                    onClick={() => setDecision({ kind: 'approve', operation: op })}
+                  >
                     Approve
                   </Button>
                 </div>
@@ -101,28 +131,27 @@ export default function CashOperationsPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
-        eyebrow="Branch"
         title="Cash approvals"
-        description="Deposits and withdrawals above a teller’s limits wait here for a second person. Requests that aren’t decided in time expire."
+        description="Deposits and withdrawals above a teller’s limits wait here for a second person. Requests not decided in time expire."
       />
       {canAct ? null : (
         <Callout tone="info" title="Read-only">
           Only bank administrators can approve or reject cash operations.
         </Callout>
       )}
-      <Card>
-        <StatusTabs
-          label="Filter by status"
-          tabs={TABS}
-          value={filter}
-          onChange={(next) => {
-            setFilter(next);
-            setOffset(0);
-          }}
-        >
-          <DataTable
+      <StatusTabs
+        label="Filter by status"
+        tabs={TABS}
+        value={filter}
+        onChange={(next) => {
+          setFilter(next);
+          setOffset(0);
+        }}
+      >
+        <Card className="overflow-hidden">
+          <RowTable
             caption="Cash operations"
             columns={columns}
             rows={query.data}
@@ -140,8 +169,8 @@ export default function CashOperationsPage() {
           {query.data && (query.data.length > 0 || offset > 0) ? (
             <Pagination offset={offset} limit={PAGE_SIZE} count={query.data.length} onChange={setOffset} />
           ) : null}
-        </StatusTabs>
-      </Card>
+        </Card>
+      </StatusTabs>
       {canAct ? <CashDecisionDialog decision={decision} requesterLabel={tellers.label} onClose={() => setDecision(null)} /> : null}
     </div>
   );

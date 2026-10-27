@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ArrowLeft, KeyRound, LogIn } from 'lucide-react';
+import { ArrowLeft, KeyRound } from 'lucide-react';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import { decodeAccessToken } from '@/lib/auth/session';
 import { describeError, isApiError } from '@/lib/api/errors';
@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Field, Input, OtpInput, PasswordInput } from '@/components/ui/input';
 import { Callout } from '@/components/ui/primitives';
 import { AuthHeading, AuthIcon } from '@/components/layout/AuthLayout';
+import { BrandMark } from '@/components/layout/Brand';
 
 const credentialsSchema = z.object({
   email: emailSchema,
@@ -91,11 +92,7 @@ export default function LoginPage() {
   const { errors, isSubmitting } = form.formState;
   return (
     <div>
-      <AuthHeading
-        icon={<AuthIcon><LogIn aria-hidden="true" /></AuthIcon>}
-        title="Welcome back"
-        description="Sign in to manage your accounts and payments."
-      />
+      <AuthHeading icon={<BrandMark className="size-12" />} title="Welcome back" description="Sign in to manage your accounts and payments." />
       {state?.signedOut ? <Callout tone="success" className="mb-5" title="You have been signed out" /> : null}
       {state?.passwordReset ? (
         <Callout tone="success" className="mb-5" title="Password updated">
@@ -109,7 +106,7 @@ export default function LoginPage() {
           setResent(true);
         }
       }} /> : null}
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+      <form onSubmit={onSubmit} className="space-y-5" noValidate>
         <Field label="Email" error={errors.email?.message}>
           {(p) => <Input {...p} {...form.register('email')} type="email" autoComplete="username" inputMode="email" autoFocus />}
         </Field>
@@ -124,11 +121,11 @@ export default function LoginPage() {
         >
           {(p) => <PasswordInput {...p} {...form.register('password')} autoComplete="current-password" />}
         </Field>
-        <Button type="submit" block size="lg" loading={isSubmitting}>
+        <Button type="submit" block size="lg" loading={isSubmitting} className="!mt-7">
           Sign in
         </Button>
       </form>
-      <p className="mt-6 text-center text-sm text-muted-foreground">
+      <p className="mt-8 text-center text-[14px] text-muted-foreground">
         New to BankSphere?{' '}
         <Link to="/register" className="font-medium text-primary hover:underline">
           Open an account

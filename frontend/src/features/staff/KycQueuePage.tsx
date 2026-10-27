@@ -45,41 +45,40 @@ export default function KycQueuePage() {
   const decides = role === 'KYC_OFFICER';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
-        eyebrow="Compliance"
         title="KYC review"
-        description={
-          decides
-            ? 'Profiles that have waited longest are at the top. Open one to check the details and verify or reject it.'
-            : 'Identity verification status for every customer.'
-        }
+        description={decides ? 'Longest waiting first. Open a profile to check it, then verify or reject it.' : 'Identity verification status for every customer.'}
       />
       {decides ? null : (
         <Callout tone="info" title="Read-only view">
           KYC decisions are made by KYC officers. You can see each customer’s status and review history.
         </Callout>
       )}
-      <Card>
-        <Tabs value={tab.value} onValueChange={(value) => update({ status: value === 'pending' ? undefined : value, offset: undefined })}>
-          <div className="flex flex-col gap-4 p-5 pb-4 sm:p-6 sm:pb-4 md:flex-row md:items-end md:justify-between">
-            <TabsList aria-label="KYC status">
-              {TABS.map((t) => (
-                <TabsTrigger key={t.value} value={t.value}>
-                  {t.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            <SearchField
-              label="Search"
-              hint="Name, phone number or user ID"
-              placeholder="e.g. Asha Rao"
-              value={search}
-              onChange={setSearch}
-              className="md:w-80"
-            />
-          </div>
-          <TabsContent value={tab.value} className="mt-0 border-t">
+      <Tabs
+        value={tab.value}
+        onValueChange={(value) => update({ status: value === 'pending' ? undefined : value, offset: undefined })}
+        className="space-y-4"
+      >
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <TabsList aria-label="KYC status" className="w-full md:w-auto">
+            {TABS.map((t) => (
+              <TabsTrigger key={t.value} value={t.value} className="flex-1 md:flex-none">
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <SearchField
+            label="Search"
+            hint="Name, phone number or user ID"
+            placeholder="Name, phone or user ID"
+            value={search}
+            onChange={setSearch}
+            className="md:w-80"
+          />
+        </div>
+        <TabsContent value={tab.value} className="mt-0">
+          <Card className="overflow-hidden">
             <LoadingAnnouncement active={query.isFetching} label="Loading customers…" />
             <CustomerTable
               rows={rows}
@@ -88,6 +87,7 @@ export default function KycQueuePage() {
               onRetry={() => void query.refetch()}
               caption={`${tab.label} KYC profiles`}
               showWaiting={pending}
+              showStatus={false}
               dateLabel={pending ? 'Submitted' : 'Last updated'}
               backLabel="KYC review"
               empty={q ? { title: `No customers match “${q}”`, description: 'Check the spelling, or search by phone number or user ID.' } : EMPTY[tab.status]}
@@ -95,9 +95,9 @@ export default function KycQueuePage() {
             {rows && (rows.length > 0 || offset > 0) ? (
               <Pagination offset={offset} limit={LIMIT} count={rows.length} onChange={(next) => update({ offset: next })} />
             ) : null}
-          </TabsContent>
-        </Tabs>
-      </Card>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

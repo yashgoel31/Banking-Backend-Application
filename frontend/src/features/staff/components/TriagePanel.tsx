@@ -1,18 +1,17 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Eye, RotateCcw, Undo2, XCircle } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { isApiError } from '@/lib/api/errors';
 import type { FraudAlert } from '@/lib/api/types';
 import { notifyError, notifySuccess } from '@/lib/notify';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/overlays';
-import { Callout, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/primitives';
 import { alertKey, applyAlertUpdate } from './alertLookup';
 import { CloseAlertDialog, isSevere, type CloseStatus } from './CloseAlertDialog';
 import { ALERT_STATUS_LABEL, shortId } from './format';
 import { hasCode, isRefusal } from './hooks';
 import { OutcomeCallout, outcomeFromError, type Outcome } from './Outcome';
+import { Panel } from './layout';
 
 type SimpleIntent = 'start' | 'reopen' | 'withdraw' | 'decline';
 type Intent = { kind: SimpleIntent } | { kind: 'close'; status: CloseStatus; confirming: boolean };
@@ -75,10 +74,9 @@ function refusal(error: unknown, alert: FraudAlert, me: string): Outcome {
  * status); any non-closing change clears a pending proposal. The message shown always reflects what the
  * API actually did, which can differ from the intent if someone else acted in the meantime.
  */
-export function TriagePanel({ alert, me }: { alert: FraudAlert; me: string }) {
+export function TriagePanel({ alert, me, className }: { alert: FraudAlert; me: string; className?: string }) {
   const api = useApi();
   const queryClient = useQueryClient();
-  const titleId = useId();
   const [closing, setClosing] = useState<{ status: CloseStatus; confirming: boolean } | null>(null);
   const [confirm, setConfirm] = useState<Exclude<SimpleIntent, 'start'> | null>(null);
   const [starting, setStarting] = useState(false);
@@ -133,48 +131,48 @@ export function TriagePanel({ alert, me }: { alert: FraudAlert; me: string }) {
     }
   };
 
+  const lead = (text: ReactNode) => <p className="text-[14px] leading-5 text-muted-foreground">{text}</p>;
   let body: ReactNode;
   if (alert.initiatedBy === me) {
     body = (
-      <Callout tone="danger" title="You can’t triage this alert">
-        It’s about a transaction you initiated, so another analyst must handle it.
-      </Callout>
+      <div className="space-y-1">
+        <p className="text-[15px] font-medium tracking-[-0.01em]">You can’t triage this alert</p>
+        {lead('It’s about a transaction you initiated, so another analyst must handle it.')}
+      </div>
     );
   } else if (closed) {
     body = (
       <>
-        <p className="text-[13px] text-muted-foreground">
-          This alert is {ALERT_STATUS_LABEL[alert.status].toLowerCase()}. Reopen it if new information comes to light.
-        </p>
-        <Button variant="outline" block onClick={() => setConfirm('reopen')}>
-          <RotateCcw aria-hidden="true" /> Reopen for review
+        {lead(`This alert is ${ALERT_STATUS_LABEL[alert.status].toLowerCase()}. Reopen it if new information comes to light.`)}
+        <Button variant="secondary" block className="h-11" onClick={() => setConfirm('reopen')}>
+          Reopen for review
         </Button>
       </>
     );
   } else if (proposal && proposal.by === me) {
     body = (
       <>
-        <p className="text-[13px] text-muted-foreground">
-          You proposed {closingVerb(proposal.status)} this alert. Another analyst must confirm it before the alert closes.
-        </p>
-        <Button variant="outline" block onClick={() => setConfirm('withdraw')}>
-          <Undo2 aria-hidden="true" /> Withdraw proposal
+        {lead(`You proposed ${closingVerb(proposal.status)} this alert. Another analyst must confirm it before the alert closes.`)}
+        <Button variant="secondary" block className="h-11" onClick={() => setConfirm('withdraw')}>
+          Withdraw proposal
         </Button>
       </>
     );
   } else if (proposal) {
     body = (
       <>
-        <p className="text-[13px] text-muted-foreground">
-          Analyst <span title={proposal.by}>{shortId(proposal.by)}</span> proposed {ALERT_STATUS_LABEL[proposal.status]}. Check the evidence,
-          then confirm or reject the proposal.
-        </p>
+        {lead(
+          <>
+            Analyst <span title={proposal.by}>{shortId(proposal.by)}</span> proposed {ALERT_STATUS_LABEL[proposal.status]}. Check the evidence,
+            then confirm or reject the proposal.
+          </>
+        )}
         <div className="grid gap-2">
-          <Button block onClick={() => setClosing({ status: proposal.status, confirming: true })}>
-            <CheckCircle2 aria-hidden="true" /> {`Confirm ${closingNoun(proposal.status)}`}
+          <Button block className="h-11" onClick={() => setClosing({ status: proposal.status, confirming: true })}>
+            {`Confirm ${closingNoun(proposal.status)}`}
           </Button>
-          <Button variant="outline" block onClick={() => setConfirm('decline')}>
-            <XCircle aria-hidden="true" /> Reject proposal
+          <Button variant="secondary" block className="h-11" onClick={() => setConfirm('decline')}>
+            Reject proposal
           </Button>
         </div>
       </>
@@ -182,20 +180,22 @@ export function TriagePanel({ alert, me }: { alert: FraudAlert; me: string }) {
   } else {
     body = (
       <>
-        {alert.status === 'OPEN' ? (
-          <Button block loading={starting} onClick={() => void start()}>
-            <Eye aria-hidden="true" /> Start review
-          </Button>
-        ) : null}
-        <div className="grid grid-cols-2 gap-2">
-          <Button variant="outline" onClick={() => setClosing({ status: 'RESOLVED', confirming: false })}>
-            <CheckCircle2 aria-hidden="true" /> Resolve
-          </Button>
-          <Button variant="outline" onClick={() => setClosing({ status: 'DISMISSED', confirming: false })}>
-            <XCircle aria-hidden="true" /> Dismiss
-          </Button>
+        <div className="grid gap-2">
+          {alert.status === 'OPEN' ? (
+            <Button block className="h-11" loading={starting} onClick={() => void start()}>
+              Start review
+            </Button>
+          ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="secondary" className="h-11" onClick={() => setClosing({ status: 'RESOLVED', confirming: false })}>
+              Resolve
+            </Button>
+            <Button variant="secondary" className="h-11" onClick={() => setClosing({ status: 'DISMISSED', confirming: false })}>
+              Dismiss
+            </Button>
+          </div>
         </div>
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-[13px] leading-[18px] text-muted-foreground">
           {severe
             ? 'High and critical alerts need two analysts: closing records your proposal, and a different analyst confirms it.'
             : 'Low and medium alerts close as soon as you decide. Closing always needs a note.'}
@@ -207,14 +207,9 @@ export function TriagePanel({ alert, me }: { alert: FraudAlert; me: string }) {
   const confirmCopy = confirm ? CONFIRMS[confirm] : null;
 
   return (
-    <Card role="region" aria-labelledby={titleId}>
-      <CardHeader>
-        <CardTitle id={titleId}>Triage</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <OutcomeCallout outcome={outcome} onDismiss={() => setOutcome(null)} />
-        {body}
-      </CardContent>
+    <Panel title="Triage" className={className} bodyClassName="space-y-4">
+      <OutcomeCallout outcome={outcome} onDismiss={() => setOutcome(null)} />
+      {body}
       <CloseAlertDialog
         alert={alert}
         intent={closing}
@@ -243,6 +238,6 @@ export function TriagePanel({ alert, me }: { alert: FraudAlert; me: string }) {
           }}
         />
       ) : null}
-    </Card>
+    </Panel>
   );
 }

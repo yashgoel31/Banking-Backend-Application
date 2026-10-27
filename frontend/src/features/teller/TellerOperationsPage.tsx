@@ -5,7 +5,8 @@ import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
 import type { CashOperation, CashOperationStatus } from '@/lib/api/types';
 import { CASH_TYPE_LABEL, PAGE_SIZE, StatusTabs, formatDateTime, keepPageWithinFilter, type StatusTab } from '@/features/branch/components/cash';
-import { DataTable, Pagination, type Column } from '@/components/ui/data';
+import { Pagination } from '@/components/ui/data';
+import { RowTable, type RowColumn } from '@/features/branch/components/RowTable';
 import { Amount, Card, Mono, PageHeader, StatusBadge } from '@/components/ui/primitives';
 
 type Filter = 'ALL' | CashOperationStatus;
@@ -24,18 +25,28 @@ const EMPTY: Record<Filter, { title: string; description: string }> = {
   REJECTED: { title: 'No rejected operations', description: 'Operations a supervisor rejected, or that expired, appear here.' },
 };
 
-const COLUMNS: Column<CashOperation>[] = [
-  { key: 'time', header: 'Time', cell: (op) => <span className="whitespace-nowrap tnum">{formatDateTime(op.createdAt)}</span> },
-  { key: 'type', header: 'Type', cell: (op) => CASH_TYPE_LABEL[op.type] },
-  { key: 'amount', header: 'Amount', align: 'right', cell: (op) => <Amount paise={op.amountInPaise} /> },
-  { key: 'account', header: 'Account', hideOnMobile: true, cell: (op) => <Mono value={op.accountId} /> },
-  { key: 'status', header: 'Status', cell: (op) => <StatusBadge status={op.status} /> },
+const COLUMNS: RowColumn<CashOperation>[] = [
+  { key: 'type', header: 'Type', phone: 'title', cell: (op) => <span className="font-medium tracking-[-0.01em]">{CASH_TYPE_LABEL[op.type]}</span> },
+  {
+    key: 'time',
+    header: 'Time',
+    phone: 'detail',
+    cell: (op) => <span className="whitespace-nowrap tnum md:text-muted-foreground">{formatDateTime(op.createdAt)}</span>,
+  },
+  { key: 'status', header: 'Status', phone: 'detail', cell: (op) => <StatusBadge status={op.status} /> },
+  { key: 'account', header: 'Account', phone: 'hidden', cell: (op) => <Mono value={op.accountId} /> },
   {
     key: 'decided',
     header: 'Decided',
-    hideOnMobile: true,
-    cell: (op) => (op.decidedAt ? <span className="whitespace-nowrap tnum">{formatDateTime(op.decidedAt)}</span> : <span className="text-muted-foreground">—</span>),
+    phone: 'hidden',
+    cell: (op) =>
+      op.decidedAt ? (
+        <span className="whitespace-nowrap text-muted-foreground tnum">{formatDateTime(op.decidedAt)}</span>
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      ),
   },
+  { key: 'amount', header: 'Amount', align: 'right', phone: 'end', cell: (op) => <Amount paise={op.amountInPaise} className="font-semibold" /> },
 ];
 
 export default function TellerOperationsPage() {
@@ -53,23 +64,22 @@ export default function TellerOperationsPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
-        eyebrow="Branch"
         title="My operations"
-        description="Cash deposits and withdrawals you’ve handled. Operations above your approval limits wait here until a supervisor decides."
+        description="Cash deposits and withdrawals you’ve handled. Those above your approval limits wait here until a supervisor decides."
       />
-      <Card>
-        <StatusTabs
-          label="Filter by status"
-          tabs={TABS}
-          value={filter}
-          onChange={(next) => {
-            setFilter(next);
-            setOffset(0);
-          }}
-        >
-          <DataTable
+      <StatusTabs
+        label="Filter by status"
+        tabs={TABS}
+        value={filter}
+        onChange={(next) => {
+          setFilter(next);
+          setOffset(0);
+        }}
+      >
+        <Card className="overflow-hidden">
+          <RowTable
             caption="Your cash operations"
             columns={COLUMNS}
             rows={query.data}
@@ -83,8 +93,8 @@ export default function TellerOperationsPage() {
           {query.data && (query.data.length > 0 || offset > 0) ? (
             <Pagination offset={offset} limit={PAGE_SIZE} count={query.data.length} onChange={setOffset} />
           ) : null}
-        </StatusTabs>
-      </Card>
+        </Card>
+      </StatusTabs>
     </div>
   );
 }

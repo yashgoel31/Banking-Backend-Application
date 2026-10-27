@@ -12,9 +12,10 @@ import { notifySuccess } from '@/lib/notify';
 import { rupeesSchema } from '@/lib/validation';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/input';
-import { Callout, MoneyInput } from '@/components/ui/primitives';
+import { Callout } from '@/components/ui/primitives';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/overlays';
 import { POLICY, paiseInMessage } from '../lib';
+import { AmountField } from './AmountField';
 
 const schemaFor = (ceiling: string | null | undefined) =>
   z.object({
@@ -86,14 +87,14 @@ export function DailyLimitDialog({
 
   return (
     <Dialog open={open} onOpenChange={change}>
-      <DialogContent size="sm">
+      <DialogContent size="sm" className="sm:max-w-md">
         <form onSubmit={onSubmit} className="grid gap-5" noValidate>
           <DialogHeader
             title="Change daily limit"
             description={`The most that can leave this account in a day. It is ${formatPaise(account.dailyLimitPaise)} now.`}
           />
           <Field label="New daily limit" error={form.formState.errors.limit?.message} hint={hint}>
-            {(p) => <MoneyInput {...p} {...form.register('limit')} autoFocus />}
+            {(p) => <AmountField {...p} {...form.register('limit')} size="md" autoFocus />}
           </Field>
           {problem ? (
             <Callout tone="danger" title={problem.title}>
@@ -101,10 +102,10 @@ export function DailyLimitDialog({
             </Callout>
           ) : null}
           <DialogFooter>
-            <Button variant="outline" onClick={() => change(false)} disabled={form.formState.isSubmitting}>
+            <Button variant="secondary" size="lg" onClick={() => change(false)} disabled={form.formState.isSubmitting}>
               Cancel
             </Button>
-            <Button type="submit" loading={form.formState.isSubmitting}>
+            <Button type="submit" size="lg" loading={form.formState.isSubmitting}>
               Save limit
             </Button>
           </DialogFooter>

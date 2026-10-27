@@ -5,8 +5,8 @@ import { server } from '@/test/server';
 import { apiUrl, fail, ok, renderWithApp } from '@/test/render';
 import { IDS, anAccount, anEntry } from '@/test/fixtures';
 import type { BankAccount } from '@/lib/api/types';
-import { mockCustomerApi } from './testing';
-import { formatDate, formatTime } from './lib';
+import { daysAgo, mockCustomerApi } from './testing';
+import { dayHeading, formatTime } from './lib';
 import AccountDetailPage from './AccountDetailPage';
 
 const savings = anAccount();
@@ -35,21 +35,38 @@ describe('AccountDetailPage', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Savings account' })).toBeInTheDocument();
     expect(screen.getByText('1001 2345 6789')).toBeInTheDocument();
     const overview = screen.getByRole('region', { name: 'Account overview' });
-    expect(await within(overview).findByText('₹1,25,500.75')).toBeInTheDocument();
+    await waitFor(() => expect(overview).toHaveTextContent('₹1,25,500.75'));
     expect(within(overview).getByText('₹1,00,000.00')).toBeInTheDocument();
 
-    const table = await screen.findByRole('table', { name: 'Statement' });
-    await within(table).findByText('Rent October');
-    const rows = within(table).getAllByRole('row').slice(1);
+    const statement = screen.getByRole('region', { name: 'Statement' });
+    await within(statement).findByText('Rent October');
+    const rows = within(statement).getAllByRole('listitem');
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent('Rent October');
     expect(rows[0]).toHaveTextContent('REF-20261027-0001');
     expect(rows[0]).toHaveTextContent('-₹2,500.00');
-    expect(rows[0]).toHaveTextContent('₹1,23,000.75');
-    expect(rows[0]).toHaveTextContent(formatDate(debit.createdAt));
+    expect(rows[0]).toHaveTextContent('Balance after: ₹1,23,000.75');
     expect(rows[0]).toHaveTextContent(formatTime(debit.createdAt));
     expect(rows[1]).toHaveTextContent('Cash deposit');
     expect(rows[1]).toHaveTextContent('+₹50,000.00');
+    // Rows are grouped under the day they happened
+    expect(within(statement).getByRole('heading', { name: dayHeading(debit.createdAt) })).toBeInTheDocument();
+    expect(within(statement).getByRole('heading', { name: dayHeading(deposit.createdAt) })).toBeInTheDocument();
+  });
+
+  it('draws how the balance moved once there is a week of history', async () => {
+    mockAccount(savings, [anEntry({ createdAt: daysAgo(10), balanceAfterInPaise: '12550075' })]);
+    render();
+    const overview = await screen.findByRole('region', { name: 'Account overview' });
+    expect(await within(overview).findByRole('img', { name: /balance from .* to .*₹1,25,500\.75/i })).toBeInTheDocument();
+  });
+
+  it('leaves the line out for an account with less than a week behind it', async () => {
+    mockAccount(anAccount({ createdAt: daysAgo(2) }), [anEntry({ createdAt: daysAgo(1) })]);
+    render();
+    const statement = await screen.findByRole('region', { name: 'Statement' });
+    await within(statement).findByText('Rent October');
+    expect(within(screen.getByRole('region', { name: 'Account overview' })).queryByRole('img')).not.toBeInTheDocument();
   });
 
   it('pages through the statement twenty entries at a time', async () => {
@@ -65,12 +82,12 @@ describe('AccountDetailPage', () => {
       })
     );
     const { user } = render();
-    const table = await screen.findByRole('table', { name: 'Statement' });
-    await within(table).findByText('Payment 1');
-    expect(within(table).getAllByRole('row')).toHaveLength(21);
+    const statement = await screen.findByRole('region', { name: 'Statement' });
+    await within(statement).findByText('Payment 1');
+    expect(within(statement).getAllByRole('listitem')).toHaveLength(20);
     await user.click(screen.getByRole('button', { name: /next/i }));
-    expect(await within(table).findByText('Payment 21')).toBeInTheDocument();
-    await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(6));
+    expect(await within(statement).findByText('Payment 21')).toBeInTheDocument();
+    await waitFor(() => expect(within(statement).getAllByRole('listitem')).toHaveLength(5));
     expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /previous/i })).toBeEnabled();
     expect(offsets).toEqual(['0/20', '20/20']);

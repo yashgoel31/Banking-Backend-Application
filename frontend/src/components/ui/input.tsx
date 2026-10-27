@@ -1,17 +1,18 @@
 import { forwardRef, useId, useState, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { CircleAlert, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
+// 16px text on phones stops iOS Safari zooming into a focused field; 15px from the sm breakpoint
 const fieldBase =
-  'flex w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm transition-[border-color,box-shadow] placeholder:text-muted-foreground/80 focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-destructive aria-[invalid=true]:focus-visible:ring-destructive/25';
+  'flex w-full rounded-xl border border-input bg-background px-3.5 text-base text-foreground transition-[border-color,box-shadow] duration-150 placeholder:text-muted-foreground/70 hover:border-foreground/25 focus-visible:outline-none focus-visible:border-ring focus-visible:ring-4 focus-visible:ring-ring/20 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 aria-[invalid=true]:border-destructive aria-[invalid=true]:focus-visible:ring-destructive/20 sm:text-[15px]';
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(({ className, type, ...props }, ref) => (
-  <input ref={ref} type={type ?? 'text'} className={cn(fieldBase, 'h-10', className)} {...props} />
+  <input ref={ref} type={type ?? 'text'} className={cn(fieldBase, 'h-11', className)} {...props} />
 ));
 Input.displayName = 'Input';
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(({ className, ...props }, ref) => (
-  <textarea ref={ref} className={cn(fieldBase, 'min-h-[88px] py-2 leading-relaxed', className)} {...props} />
+  <textarea ref={ref} className={cn(fieldBase, 'min-h-[96px] py-2.5 leading-relaxed', className)} {...props} />
 ));
 Textarea.displayName = 'Textarea';
 
@@ -34,9 +35,9 @@ export function Field({ label, error, hint, labelAside, optional, className, chi
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [errorId, hintId].filter(Boolean).join(' ') || undefined;
   return (
-    <div className={cn('space-y-1.5', className)}>
+    <div className={cn('space-y-2', className)}>
       <div className="flex items-baseline justify-between gap-2">
-        <label htmlFor={id} className="text-[13px] font-medium text-foreground">
+        <label htmlFor={id} className="text-[13px] font-medium tracking-[-0.005em] text-foreground">
           {label}
           {optional ? <span className="ml-1 font-normal text-muted-foreground">(optional)</span> : null}
         </label>
@@ -44,11 +45,12 @@ export function Field({ label, error, hint, labelAside, optional, className, chi
       </div>
       {children({ id, 'aria-invalid': Boolean(error), 'aria-describedby': describedBy })}
       {error ? (
-        <p id={errorId} role="alert" className="text-[13px] font-medium text-destructive">
+        <p id={errorId} role="alert" className="flex items-start gap-1.5 text-[13px] font-medium leading-[18px] text-destructive">
+          <CircleAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
           {error}
         </p>
       ) : hint ? (
-        <p id={hintId} className="text-[13px] text-muted-foreground">
+        <p id={hintId} className="text-[13px] leading-[18px] text-muted-foreground">
           {hint}
         </p>
       ) : null}
@@ -64,7 +66,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HT
       <button
         type="button"
         onClick={() => setVisible((v) => !v)}
-        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-md text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+        className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
         aria-label={visible ? 'Hide password' : 'Show password'}
         aria-pressed={visible}
       >
@@ -85,7 +87,7 @@ export const OtpInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HT
       pattern="[0-9]*"
       maxLength={6}
       placeholder="••••••"
-      className={cn('h-12 text-center font-mono text-xl tracking-[0.5em] tnum', className)}
+      className={cn('h-14 text-center text-[26px] font-medium tracking-[0.42em] tnum placeholder:tracking-[0.3em] sm:text-[26px]', className)}
       onChange={(e) => {
         const digits = e.target.value.replace(/\D/g, '').slice(0, 6);
         e.target.value = digits;
@@ -102,8 +104,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     ref={ref}
     className={cn(
       fieldBase,
-      'h-10 cursor-pointer appearance-none bg-[length:16px] bg-[right_0.6rem_center] bg-no-repeat pr-9',
-      "bg-[url(\"data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='m6 9 6 6 6-6'/%3e%3c/svg%3e\")]",
+      'select-chevron h-11 cursor-pointer appearance-none pr-10',
       className
     )}
     {...props}

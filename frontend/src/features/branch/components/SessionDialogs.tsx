@@ -14,9 +14,9 @@ import { rupeesSchema } from '@/lib/validation';
 import { useStepUp } from '@/features/security/StepUp';
 import { Button } from '@/components/ui/button';
 import { Field, NativeSelect } from '@/components/ui/input';
-import { Callout, MoneyInput } from '@/components/ui/primitives';
+import { Callout } from '@/components/ui/primitives';
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/overlays';
-import { describeDiscrepancy, formatBusinessDate } from './cash';
+import { describeDiscrepancy, formatBusinessDate, LargeMoneyInput } from './cash';
 
 interface Problem {
   title: string;
@@ -116,7 +116,7 @@ export function IssueFloatDialog({
               tone="danger"
               title="We couldn’t load the list of tellers"
               action={
-                <Button variant="outline" size="sm" onClick={onRetryTellers}>
+                <Button variant="secondary" size="sm" onClick={onRetryTellers}>
                   <RotateCw aria-hidden="true" /> Try again
                 </Button>
               }
@@ -139,11 +139,11 @@ export function IssueFloatDialog({
             )}
           </Field>
           <Field label="Opening float" error={errors.amount?.message} hint="The total cash you’re handing over.">
-            {(p) => <MoneyInput {...p} {...form.register('amount')} />}
+            {(p) => <LargeMoneyInput {...p} {...form.register('amount')} />}
           </Field>
           <DialogFooter>
             <DialogClose asChild>
-              <Button variant="outline" disabled={isSubmitting}>
+              <Button variant="secondary" disabled={isSubmitting}>
                 Cancel
               </Button>
             </DialogClose>
@@ -208,7 +208,7 @@ export function SignOffDialog({
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   const form = useForm({ resolver: zodResolver(countSchema), defaultValues: { counted: '' } });
-  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const summaryRef = useRef<HTMLDivElement>(null);
 
   // Announce the figure being signed off; never park focus on the irreversible button
   useEffect(() => {
@@ -284,11 +284,11 @@ export function SignOffDialog({
                 </Callout>
               ) : null}
               <Field label="Cash counted" error={form.formState.errors.counted?.message} hint="Enter 0 if the drawer is empty.">
-                {(p) => <MoneyInput {...p} {...form.register('counted')} autoFocus />}
+                {(p) => <LargeMoneyInput {...p} {...form.register('counted')} autoFocus />}
               </Field>
               <DialogFooter>
                 <DialogClose asChild>
-                  <Button variant="outline">Cancel</Button>
+                  <Button variant="secondary">Cancel</Button>
                 </DialogClose>
                 <Button type="submit">Continue</Button>
               </DialogFooter>
@@ -297,17 +297,17 @@ export function SignOffDialog({
             <div className="grid gap-5">
               <DialogHeader title="Confirm sign-off" description={`${tellerLabel} · ${formatBusinessDate(session.businessDate)}`} />
               {problem ? <ProblemCallout problem={problem} /> : null}
-              <div className="space-y-2 rounded-lg border bg-muted/30 p-4 text-sm">
-                <p ref={summaryRef} tabIndex={-1} className="text-base font-semibold tnum outline-none">
-                  You counted {formatPaise(counted)}.
-                </p>
-                <p className="text-muted-foreground">
-                  Signing off returns this cash to the vault and records any difference against the ledger. This can’t be undone.
-                </p>
+              {/* Focused when this step opens, so the figure being signed off is announced */}
+              <div ref={summaryRef} tabIndex={-1} className="rounded-2xl bg-muted/60 px-5 py-6 text-center outline-none">
+                <p className="text-[13px] font-medium text-muted-foreground">You counted</p>
+                <p className="mt-1 text-[36px] font-semibold leading-10 tracking-[-0.035em] tnum">{formatPaise(counted)}</p>
               </div>
+              <p className="text-pretty text-[14px] leading-5 text-muted-foreground">
+                Signing off returns this cash to the vault and records any difference against the ledger. This can’t be undone.
+              </p>
               <DialogFooter>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   disabled={busy}
                   onClick={() => {
                     setProblem(null);

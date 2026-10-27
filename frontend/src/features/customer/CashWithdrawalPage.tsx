@@ -12,24 +12,15 @@ import { rupeesSchema } from '@/lib/validation';
 import { useStepUp } from '@/features/security/StepUp';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/data';
-import { Field, NativeSelect } from '@/components/ui/input';
-import {
-  Callout,
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-  CopyButton,
-  DescriptionList,
-  EmptyState,
-  MoneyInput,
-  PageHeader,
-  Skeleton,
-} from '@/components/ui/primitives';
+import { Field } from '@/components/ui/input';
+import { Callout, Card, CopyButton, EmptyState, Skeleton } from '@/components/ui/primitives';
+import { cn } from '@/lib/cn';
 import { useAccounts, useBalances, useNow } from './hooks';
 import { POLICY, accountShortName, formatClock, formatTime } from './lib';
+import { AmountField } from './components/AmountField';
+import { Panel } from './components/Panel';
+import { Select } from './components/Select';
+import { TileFooter } from './components/TileFooter';
 
 const schema = z.object({
   accountId: z.string().min(1, 'Choose an account'),
@@ -40,10 +31,11 @@ type Values = z.output<typeof schema>;
 /** "12345678" -> "1234 5678" */
 const spaced = (code: string) => code.replace(/(\d{4})(?=\d)/g, '$1 ');
 
+/** One calm centred column, as for every single-task flow */
 function Shell({ children }: { children: ReactNode }) {
   return (
-    <div className="space-y-6">
-      <PageHeader title="Cash withdrawal" description="Create a one-time code to take cash out at any BankSphere branch." />
+    <div className="mx-auto max-w-2xl space-y-6">
+      <h1 className="large-title">Cash withdrawal</h1>
       {children}
     </div>
   );
@@ -63,10 +55,10 @@ export default function CashWithdrawalPage() {
   if (accountsQuery.isPending) {
     return (
       <Shell>
-        <Card className="max-w-xl space-y-5 p-6" aria-busy="true">
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-32" />
+        <Card className="space-y-6 p-5 sm:p-7" aria-busy="true">
+          <Skeleton className="h-6 w-56" />
+          <Skeleton className="h-11 w-full rounded-xl" />
+          <Skeleton className="h-[76px] w-full rounded-2xl" />
         </Card>
       </Shell>
     );
@@ -81,7 +73,7 @@ export default function CashWithdrawalPage() {
             title="No active account"
             description="You need an active account to withdraw cash. Open one, or contact the bank if your account is frozen."
             action={
-              <Button asChild variant="outline">
+              <Button asChild variant="secondary">
                 <Link to="/accounts">Go to accounts</Link>
               </Button>
             }
@@ -170,13 +162,14 @@ function WithdrawalFlow({ accounts }: { accounts: BankAccount[] }) {
     if (remaining <= 0) {
       const ttl = Math.max(1, Math.round((new Date(issued.code.expiresAt).getTime() - issued.issuedAt) / 60_000));
       return (
-        <Card className="max-w-xl" role="status">
+        <Card role="status">
           <EmptyState
             icon={TimerOff}
             title="This code has expired"
             description={`For your security, codes only last ${ttl} minute${ttl === 1 ? '' : 's'}. Create a new one when you’re at the branch.`}
+            className="py-16"
             action={
-              <Button onClick={() => setIssued(null)}>
+              <Button size="lg" onClick={() => setIssued(null)}>
                 <RefreshCcw aria-hidden="true" /> Create a new code
               </Button>
             }
@@ -212,14 +205,16 @@ function WithdrawalFlow({ accounts }: { accounts: BankAccount[] }) {
     ) : undefined;
 
   return (
-    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+    <>
       <Card>
         <form onSubmit={onSubmit} noValidate>
-          <CardHeader>
-            <CardTitle>Create a withdrawal code</CardTitle>
-            <CardDescription>Choose the account and the exact amount you’ll take out.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
+          <div className="space-y-6 px-5 pb-7 pt-5 sm:px-7 sm:pt-7">
+            <div className="space-y-1">
+              <h2 className="text-title-3">Create a withdrawal code</h2>
+              <p className="text-pretty text-[14px] leading-5 text-muted-foreground">
+                A one-time code for the exact amount you’ll take out at any BankSphere branch.
+              </p>
+            </div>
             {stillValid ? (
               <Callout tone="info" title="You have an active code">
                 {`A code for ${formatPaise(stillValid.amountInPaise)} from ${accountShortName(stillValid.account)} is active until ${formatTime(stillValid.expiresAt)}. Creating a new code cancels it.`}
@@ -236,56 +231,53 @@ function WithdrawalFlow({ accounts }: { accounts: BankAccount[] }) {
               hint={available ? `Available balance: ${formatPaise(available)}` : balance?.isError ? 'Balance unavailable right now' : undefined}
             >
               {(p) => (
-                <NativeSelect {...p} {...form.register('accountId')}>
+                <Select {...p} {...form.register('accountId')}>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {accountShortName(a)}
                     </option>
                   ))}
-                </NativeSelect>
+                </Select>
               )}
             </Field>
             <Field label="Amount" error={errors.amount?.message} hint={amountHint}>
-              {(p) => <MoneyInput {...p} {...form.register('amount')} />}
+              {(p) => <AmountField {...p} {...form.register('amount')} />}
             </Field>
-          </CardContent>
-          <CardFooter className="justify-end">
-            <Button type="submit" loading={isSubmitting}>
+          </div>
+          <TileFooter>
+            <Button type="submit" size="lg" className="w-full sm:w-auto" loading={isSubmitting}>
               <Banknote aria-hidden="true" /> Create code
             </Button>
-          </CardFooter>
+          </TileFooter>
         </form>
       </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>How it works</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ol className="space-y-3 text-[13px] text-muted-foreground">
-            {[
-              'Create a code here for the exact amount you need.',
-              `Go to any BankSphere branch within ${POLICY.withdrawalCodeTtlMinutes} minutes.`,
-              'Give the teller the code and show your photo ID. The code works only once.',
-            ].map((text, i) => (
-              <li key={text} className="flex gap-3">
-                <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[12px] font-semibold text-primary" aria-hidden="true">
-                  {i + 1}
-                </span>
-                <span className="pt-0.5">{text}</span>
-              </li>
-            ))}
-          </ol>
-        </CardContent>
-      </Card>
-    </div>
+      <Panel title="How it works">
+        <ol className="space-y-3.5 pb-1">
+          {[
+            'Create a code here for the exact amount you need.',
+            `Go to any BankSphere branch within ${POLICY.withdrawalCodeTtlMinutes} minutes.`,
+            'Give the teller the code and show your photo ID. The code works only once.',
+          ].map((text, i) => (
+            <li key={text} className="flex gap-3.5 text-[14px] leading-5">
+              <span className="w-3 shrink-0 text-[15px] font-semibold leading-5 text-muted-foreground tnum" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="text-pretty text-foreground/80">{text}</span>
+            </li>
+          ))}
+        </ol>
+      </Panel>
+    </>
   );
 }
 
+/** The code as a pass: one glanceable figure, its countdown, and a stub saying what it is good for */
 function CodeCard({ issued, remaining, onDone }: { issued: Issued; remaining: number; onDone: () => void }) {
   const headingId = useId();
   const { code, account } = issued;
   const total = Math.max(1, new Date(code.expiresAt).getTime() - issued.issuedAt);
   const left = Math.min(100, Math.max(0, (remaining / total) * 100));
+  const ending = remaining < 2 * 60_000;
   const amount = formatPaise(code.amountInPaise);
   const guidance = [
     { icon: IdCard, text: 'Show it to the teller together with your photo ID at any BankSphere branch.' },
@@ -294,51 +286,81 @@ function CodeCard({ issued, remaining, onDone }: { issued: Issued; remaining: nu
     { icon: PhoneOff, text: 'BankSphere will never ask for this code by phone, SMS or email. Only the teller at the counter needs it.' },
   ];
   return (
-    <Card role="region" aria-labelledby={headingId} className="max-w-xl">
-      <CardHeader>
-        <CardTitle id={headingId}>Your withdrawal code</CardTitle>
-        <CardDescription>We show it only once. Note it down, or keep this screen open at the branch.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <div className="rounded-xl border bg-muted/40 px-4 py-6 text-center">
-          <div className="flex flex-col items-center justify-center gap-1 sm:flex-row sm:gap-2">
-            <p aria-hidden="true" className="select-all whitespace-nowrap font-mono text-3xl font-semibold tracking-[0.15em] tnum sm:text-5xl sm:tracking-[0.2em]">
-              {spaced(code.authorizationCode)}
-            </p>
-            <CopyButton value={code.authorizationCode} label="Copy code" className="size-9" />
+    <Card role="region" aria-labelledby={headingId} className="overflow-hidden">
+      <div className="px-5 pt-7 text-center sm:px-8 sm:pt-9">
+        <h2 id={headingId} className="text-title-3">
+          Your withdrawal code
+        </h2>
+        <p className="mx-auto mt-1 max-w-sm text-pretty text-[14px] leading-5 text-muted-foreground">
+          We show it only once. Note it down, or keep this screen open at the branch.
+        </p>
+      </div>
+
+      <div className="px-5 pb-8 pt-7 text-center sm:px-8 sm:pt-9">
+        {/* Offset by the copy button's width, so the code itself sits on the centre line */}
+        <div className="flex items-center justify-center gap-1.5 pl-10 sm:gap-2 sm:pl-11">
+          <p aria-hidden="true" className="select-all whitespace-nowrap text-[46px] font-semibold leading-none tracking-[0.04em] tnum sm:text-[64px]">
+            {spaced(code.authorizationCode)}
+          </p>
+          <CopyButton value={code.authorizationCode} label="Copy code" className="relative size-10 shrink-0 after:absolute after:-inset-0.5 [&_svg]:size-[18px]" />
+        </div>
+        <p className="sr-only">Your code is {code.authorizationCode.split('').join(' ')}</p>
+        <div className="mx-auto mt-7 max-w-[15rem]">
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+            <div
+              className={cn('h-full rounded-full transition-[width] duration-1000 ease-linear', ending ? 'bg-warning' : 'bg-primary')}
+              style={{ width: `${left}%` }}
+            />
           </div>
-          <p className="sr-only">Your code is {code.authorizationCode.split('').join(' ')}</p>
-          <p className="mt-3 text-[13px] text-muted-foreground tnum">
+          <p className={cn('mt-2.5 text-[14px] font-medium tnum', ending ? 'text-warning' : 'text-muted-foreground')}>
             <span aria-hidden="true">Expires in {formatClock(remaining)}</span>
             <span className="sr-only">Expires at {formatTime(code.expiresAt)}</span>
           </p>
-          <div className="mx-auto mt-2 h-1 max-w-[12rem] overflow-hidden rounded-full bg-border" aria-hidden="true">
-            <div className="h-full rounded-full bg-primary transition-[width] duration-1000 ease-linear" style={{ width: `${left}%` }} />
-          </div>
         </div>
-        <DescriptionList
-          items={[
-            { label: 'Amount', value: <span className="font-medium tnum">{amount}</span> },
-            { label: 'From', value: accountShortName(account) },
-            { label: 'Valid until', value: formatTime(code.expiresAt) },
-          ]}
-        />
-        <ul className="space-y-2.5">
+      </div>
+
+      {/* The tear line of a ticket: notches cut into the tile's edges and a dashed rule between them */}
+      <div aria-hidden="true" className="relative h-0">
+        <span className="absolute -left-3 -top-3 size-6 rounded-full bg-canvas" />
+        <span className="absolute -right-3 -top-3 size-6 rounded-full bg-canvas" />
+        <span className="absolute inset-x-6 top-0 border-t-2 border-dashed border-border" />
+      </div>
+
+      <dl className="grid grid-cols-3 divide-x divide-border/70 py-6 text-center">
+        <StubFact label="Amount" value={amount} />
+        <StubFact label="From" value={accountShortName(account)} />
+        <StubFact label="Valid until" value={formatTime(code.expiresAt)} />
+      </dl>
+
+      <div className="space-y-4 border-t border-border/70 px-5 py-6 sm:px-8">
+        <ul className="space-y-3">
           {guidance.map(({ icon: Icon, text }) => (
-            <li key={text} className="flex gap-3 text-[13px]">
-              <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span>{text}</span>
+            <li key={text} className="flex gap-3 text-[14px] leading-5">
+              <Icon className="mt-px size-[18px] shrink-0 text-muted-foreground" strokeWidth={1.8} aria-hidden="true" />
+              <span className="text-pretty text-foreground/85">{text}</span>
             </li>
           ))}
         </ul>
-        <p className="flex gap-3 text-[12.5px] text-muted-foreground">
-          <MailCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <p className="flex gap-3 text-[13px] leading-[18px] text-muted-foreground">
+          <MailCheck className="mt-px size-[18px] shrink-0" strokeWidth={1.8} aria-hidden="true" />
           We’ve also emailed you to say a code was created. The email doesn’t contain the code.
         </p>
-      </CardContent>
-      <CardFooter className="justify-end">
-        <Button onClick={onDone}>Done</Button>
-      </CardFooter>
+      </div>
+
+      <TileFooter sticky={false}>
+        <Button size="lg" className="w-full sm:w-auto sm:min-w-[8rem]" onClick={onDone}>
+          Done
+        </Button>
+      </TileFooter>
     </Card>
+  );
+}
+
+function StubFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 px-2 sm:px-4">
+      <dt className="text-[13px] font-medium text-muted-foreground">{label}</dt>
+      <dd className="mt-1 text-balance text-[15px] font-semibold tracking-[-0.01em] tnum">{value}</dd>
+    </div>
   );
 }

@@ -34,7 +34,7 @@ export default function ForgotPasswordPage() {
     return (
       <div>
         <AuthHeading icon={<AuthIcon><MailCheck aria-hidden="true" /></AuthIcon>} title="Check your email" />
-        <p className="-mt-4 mb-6 text-sm text-muted-foreground">
+        <p className="-mt-4 mb-6 text-center text-[14px] text-muted-foreground">
           If an account exists for <span className="font-medium text-foreground">{sentTo}</span>, we’ve sent a link to reset the
           password. It works once and expires in 30 minutes.
         </p>
@@ -65,7 +65,7 @@ export default function ForgotPasswordPage() {
           Send reset link
         </Button>
       </form>
-      <p className="mt-6 text-center text-sm">
+      <p className="mt-8 text-center text-[14px]">
         <Link to="/login" className="font-medium text-primary hover:underline">
           Back to sign in
         </Link>

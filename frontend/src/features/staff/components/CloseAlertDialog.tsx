@@ -81,7 +81,7 @@ function CloseForm({
   return (
     <form onSubmit={onSubmit} noValidate className="grid gap-5">
       <DialogHeader title={copy.title} description={copy.description} />
-      <p className="rounded-md border bg-muted/50 px-3 py-2 text-[13px] text-muted-foreground">
+      <p className="rounded-xl bg-muted/70 px-4 py-3 text-pretty text-[13px] leading-[18px] text-muted-foreground">
         {status === 'RESOLVED'
           ? 'Resolve when the activity was a genuine risk and it has been dealt with.'
           : 'Dismiss when the alert was a false alarm and no action is needed.'}
@@ -103,7 +103,7 @@ function CloseForm({
         <Button variant="outline" onClick={onDone} disabled={form.formState.isSubmitting}>
           Cancel
         </Button>
-        <Button type="submit" variant={status === 'RESOLVED' ? 'primary' : 'secondary'} loading={form.formState.isSubmitting}>
+        <Button type="submit" loading={form.formState.isSubmitting}>
           {copy.submit}
         </Button>
       </DialogFooter>

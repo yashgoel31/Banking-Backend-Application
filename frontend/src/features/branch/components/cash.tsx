@@ -1,12 +1,12 @@
-import type { ReactNode } from 'react';
+import { forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, TrendingDown, TrendingUp } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
 import { formatPaise } from '@/lib/money';
 import { cn } from '@/lib/cn';
 import type { AccountType, CashOperationType, TellerSession } from '@/lib/api/types';
 import type { Role } from '@/lib/auth/session';
+import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/overlays';
 
 /**
@@ -49,6 +49,24 @@ export function formatDateTime(iso: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return '—';
   const p = parts(dateTimeFormatter, date);
   return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute} ${(p.dayPeriod ?? '').toLowerCase()} IST`;
+}
+
+const timeFormatter = new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: IST });
+const dayMonthFormatter = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', timeZone: IST });
+
+/**
+ * A time within a business day, as short as it can be: "2:44 pm" on that day, "28 Oct, 9:05 am" on another
+ * (all IST). For dense lists; formatDateTime is the full form.
+ */
+export function formatTimeOnDay(iso: string | null | undefined, businessDate: string): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  const t = parts(timeFormatter, date);
+  const time = `${t.hour}:${t.minute} ${(t.dayPeriod ?? '').toLowerCase()}`;
+  if (istToday(date) === businessDate) return time;
+  const d = parts(dayMonthFormatter, date);
+  return `${d.day} ${d.month}, ${time}`;
 }
 
 /** "2026-10-27" -> "Tue, 27 Oct 2026" (a calendar date, never shifted by time zones) */
@@ -106,25 +124,20 @@ export function describeDiscrepancy(paise: string | null | undefined): { label: 
   return { label: `Over by ${formatPaise(value)}`, tone: 'warning' };
 }
 
+/** The close-out result in words first (colour only reinforces it): balanced, short (red) or over (amber) */
 export function Discrepancy({ paise, className }: { paise: string | null | undefined; className?: string }) {
   const described = describeDiscrepancy(paise);
   if (!described) return <span className="text-muted-foreground">—</span>;
-  const Icon = described.tone === 'success' ? CheckCircle2 : described.tone === 'danger' ? TrendingDown : TrendingUp;
   return (
     <span
       className={cn(
-        'inline-flex flex-wrap items-center gap-x-1.5 font-medium',
-        described.tone === 'success' && 'text-success',
+        'inline-flex flex-wrap items-baseline gap-x-1.5 font-medium',
         described.tone === 'danger' && 'text-destructive',
         described.tone === 'warning' && 'text-warning',
         className
       )}
     >
-      <Icon className="size-4 shrink-0" aria-hidden="true" />
-      <span>{described.label}</span>
-      {described.tone === 'success' ? null : (
-        <span className="tnum text-[12.5px] font-normal text-muted-foreground">{formatPaise(paise, { sign: 'always' })}</span>
-      )}
+      <span className="tnum">{described.label}</span>
     </span>
   );
 }
@@ -155,7 +168,7 @@ export interface StatusTab<T extends string> {
   label: string;
 }
 
-/** Status filter tabs over a single panel (the list for the selected status) */
+/** Status filter tabs (the segmented control) above a single panel: the list for the selected status */
 export function StatusTabs<T extends string>({
   value,
   onChange,
@@ -173,18 +186,37 @@ export function StatusTabs<T extends string>({
 }) {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as T)} className={className}>
-      <div className="px-4 pt-4 sm:px-5">
-        <TabsList aria-label={label} className="w-full justify-start sm:w-auto">
-          {tabs.map((tab) => (
-            <TabsTrigger key={tab.value} value={tab.value}>
-              {tab.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </div>
-      <TabsContent value={value} className="mt-3">
+      <TabsList aria-label={label}>
+        {tabs.map((tab) => (
+          <TabsTrigger key={tab.value} value={tab.value}>
+            {tab.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <TabsContent value={value} className="mt-4 lg:mt-5">
         {children}
       </TabsContent>
     </Tabs>
   );
 }
+
+/**
+ * The amount field for cash counts and the teller's transactions: the figure is the point of the form, so it
+ * is set large, with the rupee sign to match.
+ */
+export const LargeMoneyInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(({ className, ...props }, ref) => (
+  <div className="relative">
+    <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-[22px] font-medium text-muted-foreground" aria-hidden="true">
+      ₹
+    </span>
+    <Input
+      ref={ref}
+      inputMode="decimal"
+      autoComplete="off"
+      placeholder="0.00"
+      className={cn('h-14 pl-10 text-[24px] font-semibold tracking-[-0.02em] tnum placeholder:font-normal placeholder:text-muted-foreground/50 sm:text-[24px]', className)}
+      {...props}
+    />
+  </div>
+));
+LargeMoneyInput.displayName = 'LargeMoneyInput';
