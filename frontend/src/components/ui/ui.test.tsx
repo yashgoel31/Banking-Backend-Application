@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api/errors';
 import { Button } from './button';
 import { Field, Input, OtpInput, PasswordInput } from './input';
-import { Amount, Avatar, Callout, CopyButton, EmptyState, StatusBadge, humanize } from './primitives';
+import { Amount, Avatar, BigAmount, Callout, CopyButton, DescriptionList, EmptyState, StatusBadge, humanize } from './primitives';
 import { DataTable, ErrorState, Pagination } from './data';
 import { ConfirmDialog } from './overlays';
 
@@ -109,6 +109,21 @@ describe('display primitives', () => {
     expect(digits.container.textContent).toBe('A');
     const none = render(<Avatar name="1234@x.in" />);
     expect(none.container.textContent).toBe('?');
+  });
+
+  it('shows a large balance with the paise set apart, and a dash when unknown', () => {
+    const { container, rerender } = render(<BigAmount paise="27400000" />);
+    expect(container).toHaveTextContent('₹2,74,000.00');
+    expect(screen.getByText('.00')).toBeInTheDocument();
+    rerender(<BigAmount paise={null} />);
+    expect(container).toHaveTextContent('—');
+  });
+
+  it('lays out label/value rows for every item', () => {
+    render(<DescriptionList items={[{ label: 'Email', value: 'asha@example.com' }, { label: 'Role', value: 'Customer' }]} />);
+    expect(screen.getByText('Email').tagName).toBe('DT');
+    expect(screen.getByText('asha@example.com').tagName).toBe('DD');
+    expect(screen.getAllByRole('term')).toHaveLength(2);
   });
 
   it('uses alert semantics for danger callouts', () => {

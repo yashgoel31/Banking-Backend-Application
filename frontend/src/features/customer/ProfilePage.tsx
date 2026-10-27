@@ -12,9 +12,10 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/data';
 import { Field, Input, Textarea } from '@/components/ui/input';
-import { Callout, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, PageHeader, Skeleton, StatusBadge } from '@/components/ui/primitives';
+import { Avatar, Callout, Card, Skeleton } from '@/components/ui/primitives';
 import { useProfile } from './hooks';
 import { formatDate } from './lib';
+import { TileFooter } from './components/TileFooter';
 import {
   normaliseName,
   profileSchema,
@@ -50,23 +51,23 @@ export default function ProfilePage() {
   const { user } = useAuth();
   const query = useProfile();
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
-      <PageHeader title="Profile & KYC" description="Your personal details, and where your identity check stands." />
+    <div className="mx-auto max-w-2xl space-y-6">
+      <h1 className="large-title">Profile</h1>
       {query.isError ? (
         <Card>
           <ErrorState error={query.error} onRetry={() => void query.refetch()} />
         </Card>
       ) : query.isPending ? (
         <div className="space-y-6" aria-busy="true">
-          <Skeleton className="h-24 w-full rounded-xl" />
-          <Skeleton className="h-80 w-full rounded-xl" />
+          <Skeleton className="h-48 w-full rounded-2xl" />
+          <Skeleton className="h-96 w-full rounded-2xl" />
         </div>
       ) : query.data === null ? (
         <CreateProfile email={user?.email} />
       ) : (
         <>
-          <KycStatusCard profile={query.data} />
-          <EditProfile profile={query.data} email={user?.email} />
+          <IdentityTile profile={query.data} email={user?.email} />
+          <EditProfile profile={query.data} />
         </>
       )}
     </div>
@@ -78,72 +79,73 @@ const KYC_COPY: Record<KycStatus, { title: string; body: string; icon: typeof Sh
     title: 'Identity verified',
     body: 'You can open accounts and use every BankSphere service.',
     icon: ShieldCheck,
-    tone: 'bg-success-soft text-success',
+    tone: 'text-success',
   },
   PENDING: {
     title: 'Verification in progress',
     body: 'We’re checking your details. You can open accounts once it’s done; any accounts you already have keep working meanwhile.',
     icon: Clock,
-    tone: 'bg-warning-soft text-warning',
+    tone: 'text-warning',
   },
   REJECTED: {
     title: 'We couldn’t verify your identity',
     body: 'Please contact the bank to find out what’s needed. If a detail below is wrong, correct it and we’ll check again.',
     icon: ShieldX,
-    tone: 'bg-destructive-soft text-destructive',
+    tone: 'text-destructive',
   },
 };
 
-function KycStatusCard({ profile }: { profile: CustomerProfile }) {
+/** Who you are to the bank: monogram, name and sign-in email, then where the identity check stands */
+function IdentityTile({ profile, email }: { profile: CustomerProfile; email: string | undefined }) {
   const copy = KYC_COPY[profile.kycStatus];
   const Icon = copy.icon;
   return (
-    <Card role="region" aria-label="Identity verification">
-      <div className="flex gap-4 p-5 sm:p-6">
-        <span className={cn('flex size-11 shrink-0 items-center justify-center rounded-full', copy.tone)}>
-          <Icon className="size-5" aria-hidden="true" />
-        </span>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-[15px] font-semibold">{copy.title}</p>
-            <StatusBadge status={profile.kycStatus} />
-          </div>
-          <p className="text-[13px] text-muted-foreground">{copy.body}</p>
-          <p className="text-[12px] text-muted-foreground">Profile last updated {formatDate(profile.updatedAt)}</p>
+    <Card>
+      <div className="flex items-center gap-4 px-5 py-5 sm:px-7 sm:py-6">
+        <Avatar name={profile.fullName} className="size-14 text-[20px]" />
+        <div className="min-w-0">
+          <p className="truncate text-title-3">{profile.fullName}</p>
+          {email ? <p className="truncate text-[15px] text-muted-foreground">{email}</p> : null}
         </div>
       </div>
+      <section aria-label="Identity verification" className="mx-5 flex gap-3.5 border-t border-border/70 py-5 sm:mx-7 sm:py-6">
+        <Icon className={cn('mt-px size-[22px] shrink-0', copy.tone)} strokeWidth={1.8} aria-hidden="true" />
+        <div className="min-w-0 space-y-1">
+          <p className="text-[15px] font-semibold tracking-[-0.01em]">{copy.title}</p>
+          <p className="text-pretty text-[14px] leading-5 text-muted-foreground">{copy.body}</p>
+          <p className="pt-1 text-[13px] text-muted-foreground">Profile last updated {formatDate(profile.updatedAt)}</p>
+        </div>
+      </section>
     </Card>
-  );
-}
-
-function EmailRow({ email }: { email: string | undefined }) {
-  if (!email) return null;
-  return (
-    <div className="space-y-1">
-      <p className="text-[13px] font-medium">Email</p>
-      <p className="text-sm">{email}</p>
-      <p className="text-[12.5px] text-muted-foreground">Your sign-in email. Contact the bank to change it.</p>
-    </div>
   );
 }
 
 function ProfileFields({ form, addressOptional }: { form: ProfileForm; addressOptional: boolean }) {
   const { errors } = form.formState;
   return (
-    <>
-      <Field label="Full name" error={errors.fullName?.message} hint="As it appears on your government ID">
+    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+      <Field label="Full name" error={errors.fullName?.message} hint="As it appears on your government ID" className="sm:col-span-2">
         {(p) => <Input {...p} {...form.register('fullName')} autoComplete="name" maxLength={120} />}
       </Field>
-      <Field label="Mobile number" error={errors.phoneNumber?.message} hint="With the country code, for example +91 98765 43210">
+      <Field label="Mobile number" error={errors.phoneNumber?.message} hint={'With the country code, for example +91 98765 43210'}>
         {(p) => <Input {...p} {...form.register('phoneNumber')} type="tel" inputMode="tel" autoComplete="tel" />}
       </Field>
       <Field label="Date of birth" error={errors.dateOfBirth?.message}>
-        {(p) => <Input {...p} {...form.register('dateOfBirth')} type="date" max={today()} autoComplete="bday" className="sm:max-w-[14rem]" />}
+        {(p) => <Input {...p} {...form.register('dateOfBirth')} type="date" max={today()} autoComplete="bday" />}
       </Field>
-      <Field label="Address" optional={addressOptional} error={errors.address?.message} hint="Your home address, as on your ID">
+      <Field label="Address" optional={addressOptional} error={errors.address?.message} hint="Your home address, as on your ID" className="sm:col-span-2">
         {(p) => <Textarea {...p} {...form.register('address')} autoComplete="street-address" maxLength={255} rows={3} />}
       </Field>
-    </>
+    </div>
+  );
+}
+
+function TileHeading({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="space-y-1">
+      <h2 className="text-title-3">{title}</h2>
+      <p className="text-pretty text-[14px] leading-5 text-muted-foreground">{description}</p>
+    </div>
   );
 }
 
@@ -183,29 +185,32 @@ function CreateProfile({ email }: { email: string | undefined }) {
   return (
     <Card>
       <form onSubmit={onSubmit} noValidate>
-        <CardHeader>
-          <CardTitle>Create your profile</CardTitle>
-          <CardDescription>
-            We need a few details to verify your identity, as banking rules require, before you can open an account.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <EmailRow email={email} />
+        <div className="space-y-6 px-5 pb-7 pt-5 sm:px-7 sm:pt-7">
+          <TileHeading
+            title="Create your profile"
+            description="We need a few details to verify your identity, as banking rules require, before you can open an account."
+          />
+          {email ? (
+            <div className="rounded-xl bg-muted px-4 py-3">
+              <p className="text-[13px] font-medium text-muted-foreground">Signed in as</p>
+              <p className="truncate text-[15px] font-medium">{email}</p>
+            </div>
+          ) : null}
           {problem ? (
             <Callout tone="danger" title={problem.title}>
               {problem.description}
             </Callout>
           ) : null}
           <ProfileFields form={form} addressOptional />
-          <p className="text-[12.5px] text-muted-foreground">
+          <p className="text-[13px] leading-[18px] text-muted-foreground">
             We use these details only to verify your identity and to contact you about your accounts.
           </p>
-        </CardContent>
-        <CardFooter className="justify-end">
-          <Button type="submit" loading={form.formState.isSubmitting}>
+        </div>
+        <TileFooter>
+          <Button type="submit" size="lg" className="w-full sm:w-auto" loading={form.formState.isSubmitting}>
             Create profile
           </Button>
-        </CardFooter>
+        </TileFooter>
       </form>
     </Card>
   );
@@ -218,7 +223,7 @@ const toForm = (profile: CustomerProfile): ProfileFormInput => ({
   address: profile.address ?? '',
 });
 
-function EditProfile({ profile, email }: { profile: CustomerProfile; email: string | undefined }) {
+function EditProfile({ profile }: { profile: CustomerProfile }) {
   const { api } = useAuth();
   const queryClient = useQueryClient();
   const [problem, setProblem] = useState<{ title: string; description: string } | null>(null);
@@ -232,6 +237,7 @@ function EditProfile({ profile, email }: { profile: CustomerProfile; email: stri
     (dateOfBirth ?? '') !== toDateInput(profile.dateOfBirth) ||
     (address ?? '').trim() !== (profile.address ?? '');
   const resetsKyc = identityChanged && profile.kycStatus !== 'PENDING';
+  const dirty = form.formState.isDirty;
 
   const onSubmit = form.handleSubmit(async (values) => {
     setProblem(null);
@@ -264,12 +270,8 @@ function EditProfile({ profile, email }: { profile: CustomerProfile; email: stri
   return (
     <Card>
       <form onSubmit={onSubmit} noValidate>
-        <CardHeader>
-          <CardTitle>Personal details</CardTitle>
-          <CardDescription>Keep these up to date so we can reach you and keep your accounts secure.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <EmailRow email={email} />
+        <div className="space-y-6 px-5 pb-7 pt-5 sm:px-7 sm:pt-7">
+          <TileHeading title="Personal details" description="Keep these up to date so we can reach you and keep your accounts secure." />
           {problem ? (
             <Callout tone="danger" title={problem.title}>
               {problem.description}
@@ -282,17 +284,19 @@ function EditProfile({ profile, email }: { profile: CustomerProfile; email: stri
               accounts, but your existing accounts keep working. Changing only your mobile number doesn’t need a new check.
             </Callout>
           ) : null}
-        </CardContent>
-        <CardFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:justify-end">
-          {form.formState.isDirty ? (
-            <Button variant="ghost" onClick={() => form.reset(toForm(profile))} disabled={form.formState.isSubmitting}>
+          <p className="text-[13px] leading-[18px] text-muted-foreground">To change the email you sign in with, contact the bank.</p>
+        </div>
+        {/* Pinned above the tab bar only while there is something to save */}
+        <TileFooter sticky={dirty}>
+          {dirty ? (
+            <Button variant="secondary" size="lg" onClick={() => form.reset(toForm(profile))} disabled={form.formState.isSubmitting}>
               Discard changes
             </Button>
           ) : null}
-          <Button type="submit" loading={form.formState.isSubmitting} disabled={!form.formState.isDirty}>
+          <Button type="submit" size="lg" className={cn('sm:min-w-[9rem]', !dirty && 'max-sm:self-end')} loading={form.formState.isSubmitting} disabled={!dirty}>
             {resetsKyc ? 'Save and send for verification' : 'Save changes'}
           </Button>
-        </CardFooter>
+        </TileFooter>
       </form>
     </Card>
   );

@@ -1,6 +1,5 @@
-import type { ComponentType } from 'react';
 import { Link } from 'react-router';
-import { RotateCw } from 'lucide-react';
+import { ChevronRight, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/button';
 import { Card, Skeleton } from '@/components/ui/primitives';
@@ -8,72 +7,82 @@ import { Card, Skeleton } from '@/components/ui/primitives';
 export type KpiState =
   | { status: 'loading' }
   | { status: 'error'; retry: () => void }
-  | { status: 'ready'; value: string; count: number; hint: string };
+  | {
+      status: 'ready';
+      value: string;
+      count: number;
+      hint: string;
+      /** Something has waited long enough for it to matter: the hint turns amber */
+      urgent: boolean;
+    };
 
-const TONES = {
-  warning: 'bg-warning-soft text-warning',
-  danger: 'bg-destructive-soft text-destructive',
-  primary: 'bg-primary-soft text-primary',
-} as const;
-
-/** One queue at a glance: the whole card opens the queue; a failed count can be retried in place */
-export function KpiCard({
-  label,
-  href,
-  icon: Icon,
-  tone,
-  state,
-}: {
+export interface KeyFigure {
+  id: string;
   label: string;
   href: string;
-  icon: ComponentType<{ className?: string }>;
-  tone: keyof typeof TONES;
   state: KpiState;
-}) {
-  const busy = state.status === 'ready' && state.count > 0;
+}
+
+/*
+ * Hairlines between figures, inset from the tile's edges. Phones: a 2×2 grid whose two lines cross in the
+ * middle. From lg: four in a row with short vertical lines between them.
+ */
+const V = 'before:absolute before:left-0 before:w-px before:bg-border/80';
+const H = 'after:absolute after:top-0 after:h-px after:bg-border/80 lg:after:hidden';
+const DIVIDERS = [
+  '',
+  `${V} before:top-5 before:bottom-0 lg:before:bottom-5`,
+  `${H} after:left-5 after:right-0 sm:after:left-6 lg:before:absolute lg:before:inset-y-5 lg:before:left-0 lg:before:w-px lg:before:bg-border/80`,
+  `${V} before:top-0 before:bottom-5 lg:before:top-5 ${H} after:left-0 after:right-5 sm:after:right-6`,
+];
+
+/** The queues at a glance: one tile, one figure per queue, each opening its queue */
+export function KeyFigures({ figures }: { figures: KeyFigure[] }) {
   return (
-    <Card className="relative flex h-full flex-col p-4 transition-colors focus-within:ring-2 focus-within:ring-ring hover:border-primary/40 sm:p-5">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-[13px] font-medium leading-[1.125rem] text-muted-foreground sm:leading-5">
-          {/* Stretched link: the card is one large target, but its name stays short and specific */}
-          <Link
-            to={href}
-            className="after:absolute after:inset-0 after:rounded-xl hover:text-foreground focus-visible:outline-none"
+    <Card className="overflow-hidden">
+      <ul className="grid grid-cols-2 lg:grid-cols-4">
+        {figures.map((figure, index) => (
+          <li
+            key={figure.id}
+            className={cn('relative before:pointer-events-none before:z-[1] after:pointer-events-none after:z-[1]', DIVIDERS[index % 4])}
           >
-            {label}
-            {state.status === 'ready' ? <span className="sr-only">: {state.value}</span> : null}
-          </Link>
-        </h3>
-        <span
-          className={cn(
-            // Two tiles share a phone's width: the label needs the room more than the icon does
-            'hidden size-8 shrink-0 items-center justify-center rounded-lg sm:flex',
-            busy ? TONES[tone] : 'bg-muted text-muted-foreground'
-          )}
-        >
-          <Icon className="size-4" aria-hidden="true" />
-        </span>
-      </div>
+            <Figure {...figure} />
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function Figure({ label, href, state }: KeyFigure) {
+  return (
+    <div className="group relative flex h-full flex-col px-5 py-5 transition-colors duration-150 hover:bg-accent/70 has-[a:focus-visible]:bg-accent/70 sm:px-6">
+      {/* Two lines on phones, so figures in the same row line up whatever their label's length */}
+      <h3 className="flex min-h-9 items-start justify-between gap-2 text-[13px] font-medium leading-[18px] text-muted-foreground lg:min-h-0">
+        {/* Stretched link: the whole figure is one large target, but its name stays short and specific */}
+        <Link to={href} className="after:absolute after:inset-0 focus-visible:outline-none">
+          {label}
+          {state.status === 'ready' ? <span className="sr-only">: {state.value}</span> : null}
+        </Link>
+        <ChevronRight
+          className="mt-px size-4 shrink-0 text-muted-foreground/40 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-muted-foreground"
+          aria-hidden="true"
+        />
+      </h3>
 
       {state.status === 'loading' ? (
-        <div className="mt-2 space-y-2">
-          <Skeleton className="h-8 w-16" />
-          <Skeleton className="h-3.5 w-32" />
+        <div className="mt-2.5 space-y-2.5">
+          <Skeleton className="h-7 w-14" />
+          <Skeleton className="h-3.5 w-28" />
           <span className="sr-only">Loading</span>
         </div>
       ) : null}
 
       {state.status === 'error' ? (
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
-          <p className="text-sm font-medium text-destructive">Couldn’t load</p>
+        <div className="mt-2 space-y-2">
+          <p className="text-[14px] font-medium text-destructive">Couldn’t load</p>
           {/* Above the stretched link so it stays clickable */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="relative z-10"
-            aria-label={`Try again loading ${label.toLowerCase()}`}
-            onClick={state.retry}
-          >
+          <Button variant="secondary" size="sm" className="relative z-10" aria-label={`Try again loading ${label.toLowerCase()}`} onClick={state.retry}>
             <RotateCw aria-hidden="true" />
             Try again
           </Button>
@@ -83,12 +92,12 @@ export function KpiCard({
       {state.status === 'ready' ? (
         <>
           {/* The link already carries the count for screen readers */}
-          <p className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl" aria-hidden="true">
+          <p className="mt-1.5 text-[28px] font-semibold leading-8 tracking-[-0.028em] tnum" aria-hidden="true">
             {state.value}
           </p>
-          <p className="mt-auto pt-1 text-[12.5px] text-muted-foreground">{state.hint}</p>
+          <p className={cn('mt-1 text-[13px] leading-[18px]', state.urgent ? 'font-medium text-warning' : 'text-muted-foreground')}>{state.hint}</p>
         </>
       ) : null}
-    </Card>
+    </div>
   );
 }

@@ -266,7 +266,7 @@ describe('TellerDeskPage — deposits', () => {
     await findAccount(user);
     expect(await screen.findByText('Asha Rao')).toBeInTheDocument();
     expect(screen.getByText('••••6789')).toBeInTheDocument();
-    expect(screen.getByText('Savings account')).toBeInTheDocument();
+    expect(screen.getByText('Savings')).toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
 
     await user.type(screen.getByLabelText('Amount'), '2,500');

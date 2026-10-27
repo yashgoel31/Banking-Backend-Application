@@ -13,6 +13,7 @@ import { rupeesSchema } from '@/lib/validation';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/input';
 import { Callout, MoneyInput } from '@/components/ui/primitives';
+import { LargeMoneyInput } from '@/features/branch/components/cash';
 import { ConfirmDialog } from '@/components/ui/overlays';
 
 /** Blind counts may legitimately be zero */
@@ -64,7 +65,7 @@ export function AcceptFloatForm() {
   const stale = isApiError(problem) && problem.code === 'STALE_TELLER_SESSION';
 
   return (
-    <form onSubmit={onSubmit} noValidate className="space-y-4">
+    <form onSubmit={onSubmit} noValidate className="space-y-5">
       {mismatch ? (
         <Callout tone="danger" title="Your count doesn’t match the float issued">
           <p>Nothing has been booked. Count the cash again, note by note, and enter the new total.</p>
@@ -78,9 +79,9 @@ export function AcceptFloatForm() {
         <ProblemCallout error={problem} />
       ) : null}
       <Field label="Total counted" error={form.formState.errors.counted?.message} hint="Enter 0 if you received no cash.">
-        {(p) => <MoneyInput {...p} {...form.register('counted')} className="max-w-xs" />}
+        {(p) => <LargeMoneyInput {...p} {...form.register('counted')} />}
       </Field>
-      <Button type="submit" loading={form.formState.isSubmitting}>
+      <Button type="submit" size="lg" block loading={form.formState.isSubmitting}>
         Accept float
       </Button>
     </form>
@@ -148,7 +149,7 @@ export function DeclareCountForm({
         <Field label={label} error={form.formState.errors.counted?.message} hint={hint}>
           {(p) => <MoneyInput {...p} {...form.register('counted')} />}
         </Field>
-        <Button type="submit" variant="outline" block>
+        <Button type="submit" variant="secondary" block className="max-sm:h-12">
           {submitLabel}
         </Button>
       </form>

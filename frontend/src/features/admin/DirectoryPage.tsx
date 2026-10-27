@@ -1,20 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { CheckCircle2, CircleDashed, Search, UserPlus, Users } from 'lucide-react';
+import { Search, UserPlus, Users } from 'lucide-react';
 import { useApi, useUser } from '@/lib/auth/AuthProvider';
 import { ROLES, type Role } from '@/lib/auth/session';
 import type { DirectoryUser } from '@/lib/api/types';
 import { qk } from '@/lib/query';
 import { Button } from '@/components/ui/button';
 import { DataTable, Pagination, type Column } from '@/components/ui/data';
-import { Field, Input, NativeSelect } from '@/components/ui/input';
-import { Badge, Card, PageHeader, StatusBadge } from '@/components/ui/primitives';
+import { Input, NativeSelect } from '@/components/ui/input';
+import { Avatar, Badge, Card, PageHeader } from '@/components/ui/primitives';
 import { cn } from '@/lib/cn';
 import { formatDate } from './components/format';
-import { RoleBadge } from './components/People';
 import { RequestStaffDialog } from './components/RequestStaffDialog';
-import { ROLE_INFO, STAFF_ROLES } from './components/roles';
+import { ROLE_INFO, STAFF_ROLES, roleLabel } from './components/roles';
 import { useDebouncedValue } from './components/useDebouncedValue';
 import { UserActionDialog, UserActionsMenu, type UserAction } from './components/UserActions';
 
@@ -32,6 +31,8 @@ export default function DirectoryPage() {
   const api = useApi();
   const me = useUser();
   const canManage = me.role === 'BANK_ADMIN';
+  const searchId = useId();
+  const roleId = useId();
   const [params, setParams] = useSearchParams();
   const role = parseRole(params.get('role'));
   const [search, setSearch] = useState(() => params.get('q') ?? '');
@@ -81,33 +82,22 @@ export default function DirectoryPage() {
       header: 'User',
       cell: (user) => <UserCell user={user} isMe={user.id === me.id} />,
     },
-    { key: 'role', header: 'Role', hideOnMobile: true, cell: (user) => <RoleBadge role={user.role} /> },
-    { key: 'status', header: 'Status', hideOnMobile: true, cell: (user) => <ActiveBadge user={user} /> },
-    // Secondary columns appear as the screen widens; until then UserCell repeats them under the email
+    // Secondary columns appear as the screen widens; until then UserCell says what matters under the email
+    { key: 'role', header: 'Role', hideOnMobile: true, className: 'whitespace-nowrap', cell: (user) => roleLabel(user.role) },
+    { key: 'status', header: 'Status', hideOnMobile: true, cell: (user) => <ActiveStatus user={user} /> },
     {
       key: 'mfa',
       header: 'Two-factor',
       hideOnMobile: true,
-      className: 'md:hidden lg:table-cell',
-      cell: (user) => <Badge tone={user.mfaEnabled ? 'success' : 'neutral'}>{user.mfaEnabled ? 'On' : 'Off'}</Badge>,
+      cell: (user) => <span className={user.mfaEnabled ? 'text-muted-foreground' : 'font-medium'}>{user.mfaEnabled ? 'On' : 'Off'}</span>,
     },
     {
       key: 'verified',
-      header: 'Email verified',
+      header: 'Email',
       hideOnMobile: true,
       className: 'whitespace-nowrap md:hidden xl:table-cell',
       cell: (user) =>
-        user.isEmailVerified ? (
-          <span className="inline-flex items-center gap-1.5 text-[13px]">
-            <CheckCircle2 className="size-3.5 text-success" aria-hidden="true" />
-            Verified
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
-            <CircleDashed className="size-3.5" aria-hidden="true" />
-            Not verified
-          </span>
-        ),
+        user.isEmailVerified ? <span className="text-muted-foreground">Verified</span> : <span className="font-medium">Not verified</span>,
     },
     {
       key: 'created',
@@ -115,7 +105,7 @@ export default function DirectoryPage() {
       hideOnMobile: true,
       className: 'whitespace-nowrap md:hidden xl:table-cell',
       cell: (user) => (
-        <time dateTime={user.createdAt} className="tnum text-[13px] text-muted-foreground">
+        <time dateTime={user.createdAt} className="text-muted-foreground tnum">
           {formatDate(user.createdAt)}
         </time>
       ),
@@ -126,7 +116,7 @@ export default function DirectoryPage() {
       key: 'actions',
       header: <span className="sr-only">Actions</span>,
       align: 'right',
-      className: 'w-12',
+      className: 'w-14 max-md:pl-0',
       cell: (user) =>
         user.id === me.id ? (
           <span className="sr-only">No actions on your own account</span>
@@ -144,51 +134,57 @@ export default function DirectoryPage() {
 
   const rows = query.data;
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
         title={canManage ? 'Staff & users' : 'User directory'}
         description={
           canManage
-            ? 'Everyone with a BankSphere sign-in. Customer sign-in changes take effect at once; staff changes and authenticator resets go to a second administrator for approval.'
+            ? 'Everyone with a BankSphere sign-in. Customer sign-in changes apply at once; staff changes and authenticator resets need a second administrator.'
             : 'Everyone with a BankSphere sign-in. This view is read-only; bank administrators make changes.'
         }
         actions={
           canManage ? (
-            <Button variant="outline" onClick={() => setRequestOpen(true)}>
+            <Button variant="secondary" onClick={() => setRequestOpen(true)}>
               <UserPlus aria-hidden="true" /> Request new staff member
             </Button>
           ) : undefined
         }
       />
-      <Card>
-        <div className="grid gap-3 border-b p-4 sm:grid-cols-[1fr_14rem] sm:p-5">
-          <Field label="Search" hint="Email address or user ID">
-            {(p) => (
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                <Input
-                  {...p}
-                  type="search"
-                  className="pl-9"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-            )}
-          </Field>
-          <Field label="Role">
-            {(p) => (
-              <NativeSelect {...p} value={role} onChange={(e) => setRole(e.target.value)}>
-                {ROLE_FILTERS.map((option) => (
-                  <option key={option.value || 'all'} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            )}
-          </Field>
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-2 border-b border-border/70 p-4 sm:flex-row sm:p-5">
+          <div className="relative min-w-0 flex-1">
+            <label htmlFor={searchId} className="sr-only">
+              Search
+            </label>
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <Input
+              id={searchId}
+              type="search"
+              className="border-transparent bg-muted pl-10 hover:border-transparent focus-visible:bg-background"
+              placeholder="Email address or user ID"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          <div className="sm:w-52">
+            <label htmlFor={roleId} className="sr-only">
+              Role
+            </label>
+            <NativeSelect
+              id={roleId}
+              className="border-transparent bg-muted hover:border-transparent focus-visible:bg-background"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+            >
+              {ROLE_FILTERS.map((option) => (
+                <option key={option.value || 'all'} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
         </div>
         {query.isPending ? (
           <p role="status" className="sr-only">
@@ -198,6 +194,8 @@ export default function DirectoryPage() {
         <div aria-busy={query.isFetching} className={cn('transition-opacity', query.isPlaceholderData && 'opacity-60')}>
           <DataTable
             caption="Users"
+            // A row list on phones: the one visible column needs no header
+            className="max-md:[&_thead]:hidden"
             columns={columns}
             rows={rows}
             getRowKey={(user) => user.id}
@@ -239,30 +237,62 @@ export default function DirectoryPage() {
   );
 }
 
-function ActiveBadge({ user, className }: { user: DirectoryUser; className?: string }) {
-  return <StatusBadge status={user.isActive ? 'ACTIVE' : 'DISABLED'} label={user.isActive ? 'Active' : 'Disabled'} className={className} />;
+/** Active is the normal state and stays quiet; a disabled sign-in is the exception worth a badge */
+function ActiveStatus({ user }: { user: DirectoryUser }) {
+  return user.isActive ? (
+    <span className="text-muted-foreground">Active</span>
+  ) : (
+    <Badge tone="danger" dot>
+      Disabled
+    </Badge>
+  );
 }
 
 function UserCell({ user, isMe }: { user: DirectoryUser; isMe: boolean }) {
+  // Phones show no detail columns: say the role, and only the states that are out of the ordinary
+  const exceptions = [
+    !user.isActive && { text: 'Disabled', className: 'font-medium text-destructive' },
+    !user.mfaEnabled && { text: 'Two-factor off' },
+    !user.isEmailVerified && { text: 'Email not verified' },
+  ].filter((x): x is { text: string; className?: string } => Boolean(x));
   return (
-    // break-words (not break-all) keeps the column as wide as the address instead of one letter wide
-    <div className="min-w-0 max-w-[16rem] sm:max-w-none">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        {user.role === 'CUSTOMER' ? (
-          <Link to={`/customers/${encodeURIComponent(user.id)}`} className="break-words font-medium text-primary underline-offset-2 hover:underline">
-            {user.email}
-          </Link>
-        ) : (
-          <span className="break-words font-medium">{user.email}</span>
+    // Phones: as wide as the screen allows beside the actions menu, so long addresses truncate instead of scrolling
+    <div className="flex min-w-0 items-center gap-3 max-md:max-w-[calc(100vw-8.5rem)]">
+      <Avatar name={user.email} className="size-9 text-[13px]" />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          {user.role === 'CUSTOMER' ? (
+            <Link
+              to={`/customers/${encodeURIComponent(user.id)}`}
+              className="min-w-0 truncate font-medium tracking-[-0.01em] text-primary underline-offset-2 hover:underline"
+              title={user.email}
+            >
+              {user.email}
+            </Link>
+          ) : (
+            <span className="min-w-0 truncate font-medium tracking-[-0.01em]" title={user.email}>
+              {user.email}
+            </span>
+          )}
+          {isMe ? (
+            <Badge tone="neutral" className="shrink-0">
+              You
+            </Badge>
+          ) : null}
+        </div>
+        <p className="mt-0.5 flex flex-wrap gap-x-1.5 text-[13px] leading-[18px] text-muted-foreground md:hidden">
+          <span>{roleLabel(user.role)}</span>
+          {exceptions.map((item) => (
+            <span key={item.text} className="flex gap-x-1.5">
+              <span aria-hidden="true">·</span>
+              <span className={item.className}>{item.text}</span>
+            </span>
+          ))}
+        </p>
+        {/* Between md and xl the email column is hidden: keep its exception visible */}
+        {user.isEmailVerified ? null : (
+          <p className="mt-0.5 hidden text-[13px] leading-[18px] text-muted-foreground md:block xl:hidden">Email not verified</p>
         )}
-        {isMe ? <Badge tone="primary">You</Badge> : null}
-      </div>
-      {/* Narrower screens hide detail columns: repeat each one here until its column appears */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 xl:hidden">
-        <RoleBadge role={user.role} className="md:hidden" />
-        <ActiveBadge user={user} className="md:hidden" />
-        <span className="text-[12px] text-muted-foreground lg:hidden">Two-factor {user.mfaEnabled ? 'on' : 'off'}</span>
-        {user.isEmailVerified ? null : <span className="text-[12px] text-muted-foreground">Email not verified</span>}
       </div>
     </div>
   );

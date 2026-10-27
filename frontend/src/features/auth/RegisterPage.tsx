@@ -77,7 +77,7 @@ export default function RegisterPage() {
           By continuing you agree to identity verification (KYC) as required by banking regulations.
         </p>
       </form>
-      <p className="mt-6 text-center text-sm text-muted-foreground">
+      <p className="mt-8 text-center text-[14px] text-muted-foreground">
         Already have an account?{' '}
         <Link to="/login" className="font-medium text-primary hover:underline">
           Sign in

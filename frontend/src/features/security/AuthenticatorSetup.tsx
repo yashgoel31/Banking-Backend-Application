@@ -31,7 +31,7 @@ function QrImage({ uri }: { uri: string }) {
     };
   }, [uri]);
   if (!src) return <Skeleton className="size-44 rounded-lg" />;
-  return <img src={src} alt="QR code for your authenticator app" className="size-44 rounded-lg border bg-white p-2" />;
+  return <img src={src} alt="QR code for your authenticator app" className="size-44 rounded-xl bg-white p-2.5 shadow-card" />;
 }
 
 export interface AuthenticatorSetupProps {
@@ -111,26 +111,26 @@ export function AuthenticatorSetup({ enrolmentToken, onComplete, onCancel }: Aut
           {problem.description}
         </Callout>
       ) : null}
-      <ol className="space-y-4 text-sm">
+      <ol className="space-y-3.5 text-[15px] leading-[22px]">
         <li className="flex gap-3">
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[12px] font-semibold text-primary">1</span>
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground/[0.08] text-[12px] font-semibold text-foreground tnum">1</span>
           <span>
             Open an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy…) and add an account.
           </span>
         </li>
         <li className="flex gap-3">
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[12px] font-semibold text-primary">2</span>
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground/[0.08] text-[12px] font-semibold text-foreground tnum">2</span>
           <span>Scan this QR code, or type the key by hand.</span>
         </li>
       </ol>
-      <div className="flex flex-col items-center gap-4 rounded-xl border bg-muted/40 p-5 sm:flex-row sm:items-start">
+      <div className="flex flex-col items-center gap-5 rounded-2xl bg-muted/70 p-5 sm:flex-row sm:items-center">
         <QrImage uri={setup.otpauthUri} />
         <div className="min-w-0 flex-1 space-y-2">
           <p className="flex items-center gap-1.5 text-[13px] font-medium">
             <Smartphone className="size-4 text-muted-foreground" aria-hidden="true" /> Setup key
           </p>
           <div className="flex items-start gap-1">
-            <code className="break-all rounded-md bg-background px-2 py-1.5 font-mono text-[13px] tracking-wide">{groupSecret(setup.secret)}</code>
+            <code className="break-all rounded-lg bg-background px-2.5 py-1.5 font-mono text-[13.5px] tracking-wide">{groupSecret(setup.secret)}</code>
             <CopyButton value={setup.secret} label="Copy setup key" />
           </div>
           <p className="text-[12.5px] text-muted-foreground">Keep this key private. Anyone with it can generate your codes.</p>
@@ -145,7 +145,7 @@ export function AuthenticatorSetup({ enrolmentToken, onComplete, onCancel }: Aut
           />
         )}
       </Field>
-      <Button type="submit" block loading={codeForm.formState.isSubmitting}>
+      <Button type="submit" block size="lg" loading={codeForm.formState.isSubmitting}>
         Turn on two-factor authentication
       </Button>
     </form>

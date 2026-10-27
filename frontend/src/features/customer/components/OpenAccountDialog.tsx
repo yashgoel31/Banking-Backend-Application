@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus } from 'lucide-react';
+import { Check, Plus } from 'lucide-react';
 import type { AccountType, KycStatus } from '@/lib/api/types';
 import { describeError, isApiError } from '@/lib/api/errors';
 import { useApi } from '@/lib/auth/AuthProvider';
@@ -13,6 +13,7 @@ import { Button, type ButtonProps } from '@/components/ui/button';
 import { Callout } from '@/components/ui/primitives';
 import { Dialog, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/overlays';
 import { accountTitle } from '../lib';
+import { AccountSwatch } from './AccountCard';
 import { openAccountBlocker } from './KycNotice';
 
 const ACCOUNT_TYPES: Array<{ value: AccountType; title: string; description: string }> = [
@@ -86,25 +87,40 @@ export function OpenAccountDialog({ open, onOpenChange }: { open: boolean; onOpe
         <form onSubmit={submit} className="grid gap-5" noValidate>
           <DialogHeader title="Open an account" description="Your new account is ready to use straight away, in rupees." />
           <fieldset className="grid gap-3">
-            <legend className="mb-2 text-[13px] font-medium">Account type</legend>
+            <legend className="sr-only">Account type</legend>
             {ACCOUNT_TYPES.map((option) => (
               <label
                 key={option.value}
                 className={cn(
-                  'grid cursor-pointer grid-cols-[auto_1fr] items-start gap-x-3 gap-y-0.5 rounded-lg border p-4 transition-colors hover:bg-muted/40',
-                  'has-[:checked]:border-primary has-[:checked]:bg-primary-soft/60 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring'
+                  'flex cursor-pointer items-center gap-4 rounded-2xl border p-4 transition-colors duration-200 hover:bg-accent/60',
+                  'has-[:checked]:border-primary has-[:checked]:bg-primary-soft/50 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-popover'
                 )}
               >
-                <input
-                  type="radio"
-                  name="accountType"
-                  value={option.value}
-                  checked={type === option.value}
-                  onChange={() => setType(option.value)}
-                  className="mt-0.5 size-4 shrink-0 cursor-pointer accent-primary focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-                />
-                <span className="text-sm font-medium">{option.title}</span>
-                <span className="col-start-2 text-[13px] text-muted-foreground">{option.description}</span>
+                <AccountSwatch type={option.value} className="h-9 w-[54px] rounded-[7px]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[15px] font-semibold tracking-[-0.01em]">{option.title}</span>
+                  <span className="mt-0.5 block text-[13px] leading-[18px] text-muted-foreground">{option.description}</span>
+                </span>
+                {/* The real radio sits over a drawn check, so it stays clickable, focusable and announced */}
+                <span className="relative flex size-6 shrink-0 items-center justify-center">
+                  <input
+                    type="radio"
+                    name="accountType"
+                    value={option.value}
+                    checked={type === option.value}
+                    onChange={() => setType(option.value)}
+                    className="peer absolute inset-0 z-10 m-0 cursor-pointer appearance-none rounded-full opacity-0"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="size-6 rounded-full border-2 border-input transition-colors duration-200 peer-checked:border-primary peer-checked:bg-primary"
+                  />
+                  <Check
+                    aria-hidden="true"
+                    strokeWidth={3}
+                    className="pointer-events-none absolute size-3.5 text-primary-foreground opacity-0 transition-opacity peer-checked:opacity-100"
+                  />
+                </span>
               </label>
             ))}
           </fieldset>
@@ -122,10 +138,10 @@ export function OpenAccountDialog({ open, onOpenChange }: { open: boolean; onOpe
             </Callout>
           ) : null}
           <DialogFooter>
-            <Button variant="outline" onClick={() => change(false)} disabled={mutation.isPending}>
+            <Button variant="secondary" size="lg" onClick={() => change(false)} disabled={mutation.isPending}>
               Cancel
             </Button>
-            <Button type="submit" loading={mutation.isPending}>
+            <Button type="submit" size="lg" loading={mutation.isPending}>
               Open {type === 'SAVINGS' ? 'savings' : 'current'} account
             </Button>
           </DialogFooter>
@@ -169,7 +185,7 @@ export function OpenAccountButton({
         <Plus aria-hidden="true" /> {label}
       </Button>
       {blocker && showReason ? (
-        <p id={reasonId} className="max-w-xs text-[12.5px] text-muted-foreground">
+        <p id={reasonId} className="max-w-xs text-[13px] leading-[18px] text-muted-foreground">
           {blocker}
         </p>
       ) : null}

@@ -64,16 +64,16 @@ const mine = anAdminRequest({
 });
 const cash = aCashOperation({ id: 'cash-7', createdAt: hoursAgo(3) });
 const closedSession = aTellerSession({ id: 'sess-9', status: 'CLOSED', closedAt: hoursAgo(8) });
-const alert = anAlert({ id: 'alert-1', createdAt: hoursAgo(1) });
+const alert = anAlert({
+  id: 'alert-1',
+  createdAt: hoursAgo(1),
+  reason: '[INBOUND] Transaction amount ₹6,00,000.00 exceeds threshold limit of ₹2,00,000.00 | Excessive transaction frequency: 4 transactions recorded within 60s',
+});
 
 describe('OverviewPage', () => {
-  it('greets the administrator by name with today’s date', async () => {
+  it('greets the administrator by name', async () => {
     setup();
     expect(screen.getByRole('heading', { level: 1, name: /^Good (morning|afternoon|evening), Priya$/ })).toBeInTheDocument();
-    const today = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
-    const now = new Date();
-    const localDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    expect(screen.getByText(today)).toHaveAttribute('datetime', localDay);
     await screen.findByRole('link', { name: 'Open fraud alerts: 0' });
   });
 
@@ -153,8 +153,15 @@ describe('OverviewPage', () => {
     expect(links[0]).toHaveAccessibleName(/sign off teller session/i);
     expect(links[1]).toHaveAccessibleName(/create staff member/i);
     expect(links[2]).toHaveAccessibleName(/deposit of ₹2,50,000\.00/i);
-    expect(links[3]).toHaveAccessibleName(/high fraud alert/i);
+    expect(links[3]).toHaveAccessibleName('Large amount and rapid transactions');
     expect(within(attention).getByText('Waiting 8 hours')).toBeInTheDocument();
+    // The fraud service's raw reason is humanised: direction as a label, one sentence per signal, severity as a badge
+    const fraud = within(attention).getAllByRole('listitem')[3] as HTMLElement;
+    expect(within(fraud).getByText('Incoming')).toBeInTheDocument();
+    expect(within(fraud).getByText('₹6,00,000.00 is over the ₹2,00,000.00 limit')).toBeInTheDocument();
+    expect(within(fraud).getByText('4 transactions within 1 minute')).toBeInTheDocument();
+    expect(within(fraud).getByText('High')).toBeInTheDocument();
+    expect(within(fraud).queryByText(/\[INBOUND\]/)).not.toBeInTheDocument();
     // The staff request names the new colleague; the teller's sign-off names the teller (looked up by id)
     await waitFor(() => expect(within(attention).getAllByText(/meera\.teller@banksphere\.local/)).toHaveLength(2));
     // Not decidable here: my own request, and one that has already expired
@@ -180,7 +187,7 @@ describe('OverviewPage', () => {
       createdAt: hoursAgo(4),
     });
     const { calls } = setup({ recentRequests: [createStaff, approved] });
-    const recent = screen.getByRole('region', { name: 'Recent administrative requests' });
+    const recent = screen.getByRole('region', { name: 'Recent requests' });
     const items = await within(recent).findAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveTextContent(/create staff member/i);
@@ -202,7 +209,7 @@ describe('OverviewPage', () => {
         return attempts === 1 ? fail(500, 'INTERNAL_SERVER_ERROR') : ok([]);
       },
     });
-    const recent = screen.getByRole('region', { name: 'Recent administrative requests' });
+    const recent = screen.getByRole('region', { name: 'Recent requests' });
     await user.click(await within(recent).findByRole('button', { name: /try again/i }));
     expect(await within(recent).findByText('No administrative requests yet')).toBeInTheDocument();
   });

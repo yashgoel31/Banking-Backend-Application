@@ -1,84 +1,52 @@
 import type { ReactNode } from 'react';
-import { Outlet } from 'react-router';
-import { Fingerprint, LockKeyhole, ShieldCheck } from 'lucide-react';
+import { Link, Outlet } from 'react-router';
+import { LockKeyhole } from 'lucide-react';
+import { cn } from '@/lib/cn';
 import { BrandLogo } from './Brand';
 import { ThemeToggle } from './AppShell';
 
-const POINTS = [
-  { icon: ShieldCheck, title: 'Bank-grade protection', text: 'Every transfer is double-entry, idempotent and checked against your limits.' },
-  { icon: Fingerprint, title: 'Two-factor by design', text: 'Authenticator codes guard sign-in and every high-value action.' },
-  { icon: LockKeyhole, title: 'Your session, sealed', text: 'Session keys never touch page scripts, and sign-out ends them everywhere.' },
-];
-
-/** Split-screen frame for every signed-out page */
+/** Frame for every signed-out page: one calm column, nothing competing with the form */
 export function AuthLayout() {
   return (
-    <div className="grid min-h-dvh lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
-      <section className="relative hidden overflow-hidden bg-sidebar text-white lg:flex lg:flex-col" aria-label="About BankSphere">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.18]"
-          style={{
-            backgroundImage:
-              'linear-gradient(rgba(255,255,255,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.07) 1px, transparent 1px)',
-            backgroundSize: '44px 44px',
-            maskImage: 'radial-gradient(ellipse at 30% 40%, black 40%, transparent 75%)',
-          }}
-          aria-hidden="true"
-        />
-        <div className="pointer-events-none absolute -left-24 top-1/3 size-[420px] rounded-full bg-[#2F5BFF]/25 blur-[110px]" aria-hidden="true" />
-        <div className="relative flex flex-1 flex-col justify-between p-10 xl:p-14">
-          <BrandLogo inverted />
-          <div className="max-w-md space-y-8">
-            <div className="space-y-3">
-              <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#8EA8FF]">Modern banking, uncompromised</p>
-              <h1 className="text-balance text-[2.1rem] font-semibold leading-[1.15] tracking-tight">
-                Money that moves fast. Controls that never blink.
-              </h1>
-            </div>
-            <ul className="space-y-5">
-              {POINTS.map(({ icon: Icon, title, text }) => (
-                <li key={title} className="flex gap-4">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.06]">
-                    <Icon className="size-[18px] text-[#9DB4FF]" aria-hidden="true" />
-                  </span>
-                  <span>
-                    <span className="block text-[14px] font-medium">{title}</span>
-                    <span className="block text-[13px] leading-relaxed text-white/60">{text}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <p className="text-[12px] text-white/45">© {new Date().getFullYear()} BankSphere. Deposits are held in integer paise and reconciled continuously.</p>
-        </div>
-      </section>
-      <section className="relative flex flex-col bg-background">
-        <div className="flex items-center justify-between p-5 lg:justify-end">
-          <span className="lg:hidden">
+    <div className="flex min-h-dvh flex-col bg-background dark:bg-canvas">
+      <header className="mx-auto flex w-full max-w-[1120px] items-center justify-between px-5 pt-[env(safe-area-inset-top)] sm:px-8">
+        <div className="flex h-16 items-center">
+          <Link to="/login" className="rounded-lg focus-visible:ring-2 focus-visible:ring-ring">
             <BrandLogo />
-          </span>
-          <ThemeToggle />
+          </Link>
         </div>
-        <div className="flex flex-1 items-center justify-center px-5 pb-12 pt-4 sm:px-8">
-          <div className="w-full max-w-[400px] animate-slide-up">
-            <Outlet />
-          </div>
+        <ThemeToggle />
+      </header>
+      <main className="flex flex-1 justify-center px-5 pb-16 pt-6 sm:items-center sm:px-8 sm:pt-0">
+        <div className="w-full max-w-[400px] animate-slide-up">
+          <Outlet />
         </div>
-      </section>
+      </main>
+      <footer className="mx-auto w-full max-w-[1120px] px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:px-8">
+        <div className="flex flex-col items-center gap-1.5 border-t pt-5 text-center text-[12px] leading-4 text-muted-foreground sm:flex-row sm:justify-between sm:text-left">
+          <p>© {new Date().getFullYear()} BankSphere</p>
+          <p className="inline-flex items-center gap-1.5">
+            <LockKeyhole className="size-3.5" aria-hidden="true" /> Encrypted session · two-step verification
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
 
-export function AuthHeading({ title, description, icon }: { title: string; description?: ReactNode; icon?: ReactNode }) {
+export function AuthHeading({ title, description, icon, className }: { title: string; description?: ReactNode; icon?: ReactNode; className?: string }) {
   return (
-    <div className="mb-7 space-y-2">
-      {icon ? <div className="mb-4">{icon}</div> : null}
-      <h1 className="text-[1.6rem] font-semibold tracking-tight">{title}</h1>
-      {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+    <div className={cn('mb-8 flex flex-col items-center text-center', className)}>
+      {icon ? <div className="mb-5">{icon}</div> : null}
+      <h1 className="text-[28px] font-bold leading-[34px] tracking-[-0.03em] sm:text-[32px] sm:leading-[38px]">{title}</h1>
+      {description ? <p className="mt-2 max-w-[22rem] text-pretty text-[15px] leading-[22px] text-muted-foreground">{description}</p> : null}
     </div>
   );
 }
 
+/** A quiet glyph above an auth heading (envelope, key, shield…) */
 export function AuthIcon({ children }: { children: ReactNode }) {
-  return <span className="flex size-11 items-center justify-center rounded-xl border bg-primary-soft text-primary [&_svg]:size-5">{children}</span>;
+  return (
+    <span className="flex size-14 items-center justify-center rounded-full bg-muted text-foreground [&_svg]:size-6 [&_svg]:stroke-[1.6]">{children}</span>
+  );
 }

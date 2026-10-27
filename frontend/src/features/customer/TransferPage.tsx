@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, CheckCircle2, ChevronLeft, Plus, Send, Wallet } from 'lucide-react';
+import { ArrowRight, Check, ChevronLeft, Plus, Wallet } from 'lucide-react';
 import type { BankAccount, Beneficiary, TransactionResult, TransferInput } from '@/lib/api/types';
 import { describeError, isApiError } from '@/lib/api/errors';
 import { useAuth } from '@/lib/auth/AuthProvider';
@@ -12,28 +12,19 @@ import { qk } from '@/lib/query';
 import { comparePaise, formatPaise, parseRupees } from '@/lib/money';
 import { newIdempotencyKey } from '@/lib/notify';
 import { formatAccountNumber, maskAccountNumber, rupeesSchema } from '@/lib/validation';
+import { cn } from '@/lib/cn';
 import { useStepUp } from '@/features/security/StepUp';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/data';
-import { Field, Input, NativeSelect } from '@/components/ui/input';
-import {
-  Callout,
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CopyButton,
-  DescriptionList,
-  EmptyState,
-  MoneyInput,
-  PageHeader,
-  Skeleton,
-  StatusBadge,
-} from '@/components/ui/primitives';
+import { Field, Input } from '@/components/ui/input';
+import { Avatar, BigAmount, Callout, Card, CopyButton, EmptyState, Skeleton, StatusBadge } from '@/components/ui/primitives';
 import { useAccounts, useBalances, useBeneficiaries, useNow } from './hooks';
 import { POLICY, accountShortName, formatDate, formatDateTime, formatTime, paiseInMessage } from './lib';
+import { AccountSwatch } from './components/AccountCard';
+import { AmountField } from './components/AmountField';
+import { Select } from './components/Select';
 import { StepProgress } from './components/StepProgress';
+import { TileFooter } from './components/TileFooter';
 
 const STEPS = ['Details', 'Review', 'Done'] as const;
 type Step = 'details' | 'review' | 'receipt';
@@ -145,10 +136,11 @@ function detailsProblemFrom(error: unknown): Problem {
   }
 }
 
+/** One calm centred column, as for every single-task flow */
 function PageShell({ children }: { children: ReactNode }) {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      <PageHeader title="Transfer money" description="Send money between your own accounts or to someone you’ve added as a payee." />
+      <h1 className="large-title">Transfer money</h1>
       {children}
     </div>
   );
@@ -171,11 +163,12 @@ export default function TransferPage() {
   if (accountsQuery.isPending || payeesQuery.isPending) {
     return (
       <PageShell>
-        <Card className="space-y-5 p-6" aria-busy="true">
-          <Skeleton className="h-6 w-full" />
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-1 w-full rounded-full" />
+        <Card className="space-y-6 p-5 sm:p-7" aria-busy="true">
+          <Skeleton className="h-6 w-40" />
+          <Skeleton className="h-11 w-full rounded-xl" />
+          <Skeleton className="h-11 w-full rounded-xl" />
+          <Skeleton className="h-[76px] w-full rounded-2xl" />
         </Card>
       </PageShell>
     );
@@ -190,7 +183,7 @@ export default function TransferPage() {
             title="No account to send from"
             description="You need an active account to send money. Open one, or contact the bank if your account is frozen."
             action={
-              <Button asChild variant="outline">
+              <Button asChild variant="secondary">
                 <Link to="/accounts">Go to accounts</Link>
               </Button>
             }
@@ -263,12 +256,13 @@ function TransferFlow({
   /** The last attempt whose outcome is unknown: retrying the same intent must reuse its key */
   const unsettled = useRef<{ key: string; fingerprint: string } | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const mounted = useRef(false);
+  const shownStep = useRef(step);
 
   useEffect(() => {
-    // Move focus to the new step's heading so keyboard and screen-reader users land in the right place
-    if (mounted.current) headingRef.current?.focus();
-    mounted.current = true;
+    // Move focus to the new step's heading so keyboard and screen-reader users land in the right place.
+    // Compared with the step last shown (not a "mounted" flag), so a re-run effect never steals focus on load.
+    if (shownStep.current !== step) headingRef.current?.focus();
+    shownStep.current = step;
   }, [step]);
 
   const toReview = form.handleSubmit((values) => {
@@ -371,7 +365,7 @@ function TransferFlow({
   const stepIndex = step === 'details' ? 0 : step === 'review' ? 1 : 2;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <StepProgress steps={STEPS} current={stepIndex} label="Transfer progress" />
       {step === 'details' ? (
         <DetailsStep
@@ -391,6 +385,7 @@ function TransferFlow({
       {step === 'review' && draft ? (
         <ReviewStep
           draft={draft}
+          accounts={accounts}
           sending={sending}
           problem={reviewProblem}
           now={now}
@@ -403,7 +398,7 @@ function TransferFlow({
           }}
         />
       ) : null}
-      {step === 'receipt' && receipt ? <ReceiptStep {...receipt} headingRef={headingRef} onNew={startOver} /> : null}
+      {step === 'receipt' && receipt ? <ReceiptStep {...receipt} accounts={accounts} headingRef={headingRef} onNew={startOver} /> : null}
     </div>
   );
 }
@@ -411,13 +406,53 @@ function TransferFlow({
 type FormApi = ReturnType<typeof useForm<DetailsForm>>;
 type BalanceState = ReturnType<typeof useBalances>[number] | undefined;
 
-function StepHeading({ headingRef, id, children }: { headingRef: React.RefObject<HTMLHeadingElement>; id: string; children: ReactNode }) {
+function StepHeading({
+  headingRef,
+  id,
+  children,
+  className,
+}: {
+  headingRef: React.RefObject<HTMLHeadingElement>;
+  id: string;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <h2 ref={headingRef} id={id} tabIndex={-1} className="text-[15px] font-semibold leading-tight tracking-tight focus-visible:outline-none">
+    <h2
+      ref={headingRef}
+      id={id}
+      tabIndex={-1}
+      className={cn('text-title-3 outline-none focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0', className)}
+    >
       {children}
     </h2>
   );
 }
+
+/** One line of a summary: label on the left, value (and a quieter detail) on the right, then its mark */
+function SummaryRow({ label, detail, mark, children }: { label: string; detail?: ReactNode; mark?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-3.5">
+      <dt className="shrink-0 text-[15px] text-muted-foreground">{label}</dt>
+      <dd className="flex min-w-0 items-center justify-end gap-3 text-right">
+        <span className="min-w-0">
+          <span className="block break-words text-[15px] font-medium tracking-[-0.01em]">{children}</span>
+          {detail ? <span className="block text-[13px] text-muted-foreground tnum">{detail}</span> : null}
+        </span>
+        {mark ? <span className="flex w-10 shrink-0 justify-center">{mark}</span> : null}
+      </dd>
+    </div>
+  );
+}
+
+/** How the destination is drawn: an account's card swatch, or a payee's monogram */
+function DestinationMark({ draft, accounts }: { draft: Draft; accounts: BankAccount[] }) {
+  if (draft.payee) return <Avatar name={draft.payee.nickname} className="size-8" />;
+  const destination = accounts.find((a) => a.id === draft.input.destinationAccountId);
+  return destination ? <AccountSwatch type={destination.accountType} /> : null;
+}
+
+const heroAmount = 'text-[44px] font-semibold leading-[48px] tracking-[-0.04em] sm:text-[56px] sm:leading-[60px]';
 
 function DetailsStep({
   form,
@@ -466,21 +501,18 @@ function DetailsStep({
   });
 
   const addPayeeLink = (
-    <Link to="/payees?add=1" className="inline-flex items-center gap-1 text-[13px] font-medium text-primary hover:underline">
-      <Plus className="size-3.5" aria-hidden="true" /> Add a payee
+    <Link to="/payees?add=1" className="inline-flex items-center gap-1 text-[14px] font-medium text-primary hover:underline">
+      <Plus className="size-4" aria-hidden="true" /> Add a payee
     </Link>
   );
 
   return (
     <Card role="region" aria-labelledby={headingId}>
       <form onSubmit={onSubmit} noValidate>
-        <CardHeader>
+        <div className="space-y-6 px-5 pb-7 pt-5 sm:px-7 sm:pt-7">
           <StepHeading headingRef={headingRef} id={headingId}>
             Transfer details
           </StepHeading>
-          <CardDescription>Choose where the money comes from and where it goes.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
           {problem ? (
             <Callout tone="danger" title={problem.title}>
               {problem.description}
@@ -507,106 +539,112 @@ function DetailsStep({
             }
           >
             {(p) => (
-              <NativeSelect {...p} {...sourceField}>
+              <Select {...p} {...sourceField}>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
                     {accountShortName(a)}
                   </option>
                 ))}
-              </NativeSelect>
+              </Select>
             )}
           </Field>
 
-          <fieldset className="space-y-1.5">
-            <legend className="mb-1.5 text-[13px] font-medium">To</legend>
-            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
-              {(
-                [
-                  ['own', 'My accounts'],
-                  ['payee', 'Payee'],
-                ] as const
-              ).map(([value, label]) => (
-                <label
-                  key={value}
-                  className="flex h-9 cursor-pointer items-center justify-center rounded-md text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground has-[:checked]:bg-background has-[:checked]:text-foreground has-[:checked]:shadow-sm has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
-                >
-                  <input type="radio" value={value} className="sr-only" {...form.register('mode')} />
-                  {label}
-                </label>
-              ))}
+          <fieldset className="space-y-2">
+            <legend className="sr-only">To</legend>
+            <div className="flex items-center justify-between gap-3">
+              <span aria-hidden="true" className="text-[13px] font-medium tracking-[-0.005em]">
+                To
+              </span>
+              {/* A segmented control made of real radios, so it works with the keyboard and the form library */}
+              <div className="grid h-9 grid-cols-2 gap-0.5 rounded-full bg-muted p-[3px]">
+                {(
+                  [
+                    ['own', 'My accounts'],
+                    ['payee', 'Payee'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label
+                    key={value}
+                    className="flex h-[30px] cursor-pointer items-center justify-center whitespace-nowrap rounded-full px-4 text-[13px] font-medium tracking-[-0.005em] text-muted-foreground transition-[background-color,color,box-shadow] duration-200 hover:text-foreground has-[:checked]:bg-segment has-[:checked]:font-semibold has-[:checked]:text-foreground has-[:checked]:shadow-thumb has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                  >
+                    <input type="radio" value={value} className="sr-only" {...form.register('mode')} />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
-          </fieldset>
 
-          {mode === 'own' ? (
-            ownTargets.length ? (
-              <Field label="To account" error={errors.destinationAccountId?.message}>
-                {(p) => (
-                  <NativeSelect {...p} {...form.register('destinationAccountId')}>
-                    <option value="" disabled>
-                      Select an account
-                    </option>
-                    {ownTargets.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {accountShortName(a)}
+            {mode === 'own' ? (
+              ownTargets.length ? (
+                <Field label={<span className="sr-only">To account</span>} error={errors.destinationAccountId?.message}>
+                  {(p) => (
+                    <Select {...p} {...form.register('destinationAccountId')}>
+                      <option value="" disabled>
+                        Select an account
                       </option>
-                    ))}
-                  </NativeSelect>
-                )}
-              </Field>
-            ) : (
-              <p className="rounded-lg border border-dashed p-4 text-[13px] text-muted-foreground">
-                You don’t have another active account to send to. Choose <strong className="text-foreground">Payee</strong> to pay someone
-                else.
-              </p>
-            )
-          ) : payeesError ? (
-            <Callout
-              tone="danger"
-              title="We couldn’t load your payees"
-              action={
-                <Button variant="outline" size="sm" onClick={onRetryPayees}>
-                  Try again
-                </Button>
-              }
-            />
-          ) : payees.length === 0 ? (
-            <div className="space-y-2 rounded-lg border border-dashed p-4 text-[13px] text-muted-foreground">
-              <p>You haven’t added any payees yet. Add someone’s account once, then pay them whenever you need to.</p>
-              {addPayeeLink}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Field
-                label="Recipient"
-                error={errors.beneficiaryId?.message}
-                hint={
-                  selectedPayee && isNewPayee(selectedPayee, now)
-                    ? `New payee: you can send up to ${formatPaise(POLICY.newPayeeLimitPaise)} in total during its first 24 hours.`
-                    : payees.some((p) => !isPayeeActive(p, now))
-                      ? 'Recently added payees become available after a cooling-off period.'
-                      : undefined
-                }
-              >
-                {(p) => (
-                  <NativeSelect {...p} {...form.register('beneficiaryId')}>
-                    <option value="" disabled>
-                      Select a payee
-                    </option>
-                    {payees.map((payee) => {
-                      const ready = isPayeeActive(payee, now);
-                      return (
-                        <option key={payee.id} value={payee.id} disabled={!ready}>
-                          {payeeLabel(payee)}
-                          {ready ? '' : ` — active from ${whenLabel(payee.activatesAt)}`}
+                      {ownTargets.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {accountShortName(a)}
                         </option>
-                      );
-                    })}
-                  </NativeSelect>
-                )}
-              </Field>
-              {addPayeeLink}
-            </div>
-          )}
+                      ))}
+                    </Select>
+                  )}
+                </Field>
+              ) : (
+                <p className="rounded-xl bg-muted px-4 py-3.5 text-[14px] leading-5 text-muted-foreground">
+                  You don’t have another active account to send to. Choose <strong className="font-semibold text-foreground">Payee</strong> to
+                  pay someone else.
+                </p>
+              )
+            ) : payeesError ? (
+              <Callout
+                tone="danger"
+                title="We couldn’t load your payees"
+                action={
+                  <Button variant="secondary" size="sm" onClick={onRetryPayees}>
+                    Try again
+                  </Button>
+                }
+              />
+            ) : payees.length === 0 ? (
+              <div className="space-y-2 rounded-xl bg-muted px-4 py-3.5 text-[14px] leading-5 text-muted-foreground">
+                <p>You haven’t added any payees yet. Add someone’s account once, then pay them whenever you need to.</p>
+                {addPayeeLink}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <Field
+                  label={<span className="sr-only">Recipient</span>}
+                  error={errors.beneficiaryId?.message}
+                  hint={
+                    selectedPayee && isNewPayee(selectedPayee, now)
+                      ? `New payee: you can send up to ${formatPaise(POLICY.newPayeeLimitPaise)} in total during its first 24 hours.`
+                      : payees.some((p) => !isPayeeActive(p, now))
+                        ? 'Recently added payees become available after a cooling-off period.'
+                        : undefined
+                  }
+                >
+                  {(p) => (
+                    <Select {...p} {...form.register('beneficiaryId')}>
+                      <option value="" disabled>
+                        Select a payee
+                      </option>
+                      {payees.map((payee) => {
+                        const ready = isPayeeActive(payee, now);
+                        return (
+                          <option key={payee.id} value={payee.id} disabled={!ready}>
+                            {payeeLabel(payee)}
+                            {ready ? '' : ` — active from ${whenLabel(payee.activatesAt)}`}
+                          </option>
+                        );
+                      })}
+                    </Select>
+                  )}
+                </Field>
+                {addPayeeLink}
+              </div>
+            )}
+          </fieldset>
 
           <Field
             label="Amount"
@@ -617,17 +655,17 @@ function DetailsStep({
               ) : undefined
             }
           >
-            {(p) => <MoneyInput {...p} {...form.register('amount')} />}
+            {(p) => <AmountField {...p} {...form.register('amount')} />}
           </Field>
           <Field label="Note" optional error={errors.note?.message} hint="Shown on your statement. Up to 255 characters.">
             {(p) => <Input {...p} {...form.register('note')} maxLength={255} autoComplete="off" />}
           </Field>
-        </CardContent>
-        <CardFooter className="justify-end">
-          <Button type="submit">
+        </div>
+        <TileFooter>
+          <Button type="submit" size="lg" className="w-full sm:w-auto">
             Review transfer <ArrowRight aria-hidden="true" />
           </Button>
-        </CardFooter>
+        </TileFooter>
       </form>
     </Card>
   );
@@ -635,6 +673,7 @@ function DetailsStep({
 
 function ReviewStep({
   draft,
+  accounts,
   sending,
   problem,
   now,
@@ -643,6 +682,7 @@ function ReviewStep({
   onEdit,
 }: {
   draft: Draft;
+  accounts: BankAccount[];
   sending: boolean;
   problem: Problem | null;
   now: number;
@@ -652,77 +692,79 @@ function ReviewStep({
 }) {
   const headingId = useId();
   const highValue = comparePaise(draft.amountPaise, POLICY.transferStepUpPaise) >= 0;
+  const newPayee = Boolean(draft.payee && isNewPayee(draft.payee, now));
   const amount = formatPaise(draft.amountPaise);
   return (
     <Card role="region" aria-labelledby={headingId}>
-      <CardHeader>
-        <StepHeading headingRef={headingRef} id={headingId}>
-          Review your transfer
-        </StepHeading>
-        <CardDescription>
-          Check everything before you send.{draft.payee ? ' Money sent to someone else can’t be taken back.' : ''}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <div className="rounded-lg bg-muted/60 px-4 py-5 text-center">
-          <p className="text-[13px] text-muted-foreground">You’re sending</p>
-          <p className="mt-1 text-3xl font-semibold tracking-tight tnum">{amount}</p>
+      <div className="flex items-start justify-between gap-4 px-5 pt-5 sm:px-7 sm:pt-7">
+        <div className="min-w-0 space-y-1">
+          <StepHeading headingRef={headingRef} id={headingId}>
+            Review your transfer
+          </StepHeading>
+          <p className="text-pretty text-[14px] leading-5 text-muted-foreground">
+            Check everything before you send.{draft.payee ? ' Money sent to someone else can’t be taken back.' : ''}
+          </p>
         </div>
-        <DescriptionList
-          items={[
-            {
-              label: 'From',
-              value: (
-                <>
-                  {accountShortName(draft.source)}
-                  <span className="block text-[12.5px] text-muted-foreground">{formatAccountNumber(draft.source.accountNumber)}</span>
-                </>
-              ),
-            },
-            {
-              label: 'To',
-              value: (
-                <>
-                  {draft.destinationLabel}
-                  <span className="block text-[12.5px] text-muted-foreground">{draft.destinationDetail}</span>
-                </>
-              ),
-            },
-            { label: 'Note', value: draft.note || <span className="text-muted-foreground">None</span> },
-          ]}
-        />
-        {highValue ? (
-          <Callout tone="info" title="Authenticator code needed">
-            Amounts of {formatPaise(POLICY.transferStepUpPaise)} or more need a code from your authenticator app. We’ll ask for it when you send.
-          </Callout>
-        ) : null}
-        {draft.payee && isNewPayee(draft.payee, now) ? (
-          <Callout tone="info" title="New payee">
-            In a payee’s first 24 hours you can send them up to {formatPaise(POLICY.newPayeeLimitPaise)} in total.
-          </Callout>
-        ) : null}
-        {problem ? (
-          <Callout
-            tone="danger"
-            title={problem.title}
-            action={
-              <Button variant="outline" size="sm" onClick={onSend} disabled={sending}>
-                Try again
-              </Button>
-            }
-          >
-            {problem.description} Trying again is safe: this transfer can only ever be made once.
-          </Callout>
-        ) : null}
-      </CardContent>
-      <CardFooter className="flex-col-reverse items-stretch justify-between gap-2 sm:flex-row sm:items-center">
-        <Button variant="ghost" onClick={onEdit} disabled={sending}>
-          <ChevronLeft aria-hidden="true" /> Edit details
+        <Button variant="secondary" size="sm" className="shrink-0" onClick={onEdit} disabled={sending} aria-label="Edit details">
+          <ChevronLeft aria-hidden="true" /> Edit
         </Button>
-        <Button onClick={onSend} loading={sending}>
-          <Send aria-hidden="true" /> Send {amount}
+      </div>
+
+      <div className="px-5 pt-9 text-center sm:px-7 sm:pt-10">
+        <p className="text-[15px] font-medium text-muted-foreground">You’re sending</p>
+        <p className={cn('mt-2', heroAmount)}>
+          <BigAmount paise={draft.amountPaise} />
+        </p>
+        <p className="mt-3 text-[15px] text-muted-foreground">
+          to <span className="font-medium text-foreground">{draft.destinationLabel}</span>
+        </p>
+      </div>
+
+      <dl className="mx-5 mt-9 divide-y divide-border/70 border-t border-border/70 sm:mx-7">
+        <SummaryRow label="From" detail={formatAccountNumber(draft.source.accountNumber)} mark={<AccountSwatch type={draft.source.accountType} />}>
+          {accountShortName(draft.source)}
+        </SummaryRow>
+        <SummaryRow label="To" detail={draft.destinationDetail} mark={<DestinationMark draft={draft} accounts={accounts} />}>
+          {draft.destinationLabel}
+        </SummaryRow>
+        <SummaryRow label="Note">{draft.note || <span className="font-normal text-muted-foreground">None</span>}</SummaryRow>
+      </dl>
+
+      {highValue || newPayee || problem ? (
+        <div className="space-y-3 px-5 pb-6 pt-2 sm:px-7">
+          {highValue ? (
+            <Callout tone="info" title="Authenticator code needed">
+              Amounts of {formatPaise(POLICY.transferStepUpPaise)} or more need a code from your authenticator app. We’ll ask for it when you send.
+            </Callout>
+          ) : null}
+          {newPayee ? (
+            <Callout tone="info" title="New payee">
+              In a payee’s first 24 hours you can send them up to {formatPaise(POLICY.newPayeeLimitPaise)} in total.
+            </Callout>
+          ) : null}
+          {problem ? (
+            <Callout
+              tone="danger"
+              title={problem.title}
+              action={
+                <Button variant="secondary" size="sm" onClick={onSend} disabled={sending}>
+                  Try again
+                </Button>
+              }
+            >
+              {problem.description} Trying again is safe: this transfer can only ever be made once.
+            </Callout>
+          ) : null}
+        </div>
+      ) : (
+        <div className="pb-3" />
+      )}
+
+      <TileFooter>
+        <Button size="lg" className="w-full sm:w-auto sm:min-w-[11rem]" onClick={onSend} loading={sending}>
+          Send {amount}
         </Button>
-      </CardFooter>
+      </TileFooter>
     </Card>
   );
 }
@@ -730,55 +772,65 @@ function ReviewStep({
 function ReceiptStep({
   result,
   draft,
+  accounts,
   headingRef,
   onNew,
 }: {
   result: TransactionResult;
   draft: Draft;
+  accounts: BankAccount[];
   headingRef: React.RefObject<HTMLHeadingElement>;
   onNew: () => void;
 }) {
   const headingId = useId();
   return (
     <Card role="region" aria-labelledby={headingId}>
-      <CardContent className="space-y-6 pt-6 sm:pt-8">
-        <div className="flex flex-col items-center gap-2 text-center">
-          <span className="flex size-12 items-center justify-center rounded-full bg-success-soft text-success">
-            <CheckCircle2 className="size-6" aria-hidden="true" />
+      <div className="flex flex-col items-center px-5 pt-10 text-center sm:px-7 sm:pt-12">
+        <span
+          className="flex size-16 items-center justify-center rounded-full bg-success text-success-foreground duration-500 ease-spring animate-in fade-in-0 zoom-in-50"
+          aria-hidden="true"
+        >
+          <Check className="size-8" strokeWidth={2.75} />
+        </span>
+        <StepHeading headingRef={headingRef} id={headingId} className="mt-5">
+          Money sent
+        </StepHeading>
+        <p className={cn('mt-3', heroAmount)}>
+          <BigAmount paise={result.amountInPaise} />
+        </p>
+        <p className="mt-3 text-[15px] text-muted-foreground">
+          to <span className="font-medium text-foreground">{draft.destinationLabel}</span>
+        </p>
+      </div>
+
+      <dl className="mx-5 mb-3 mt-9 divide-y divide-border/70 border-t border-border/70 sm:mx-7">
+        <SummaryRow label="From" mark={<AccountSwatch type={draft.source.accountType} />}>
+          {accountShortName(draft.source)}
+        </SummaryRow>
+        <SummaryRow label="To" detail={draft.destinationDetail} mark={<DestinationMark draft={draft} accounts={accounts} />}>
+          {draft.destinationLabel}
+        </SummaryRow>
+        <SummaryRow label="Reference">
+          <span className="inline-flex max-w-full items-center gap-0.5">
+            <span className="break-all text-[14px] tnum">{result.referenceId}</span>
+            <CopyButton value={result.referenceId} label="Copy reference" className="relative -mr-1.5 shrink-0 after:absolute after:-inset-1.5" />
           </span>
-          <StepHeading headingRef={headingRef} id={headingId}>
-            Money sent
-          </StepHeading>
-          <p className="text-3xl font-semibold tracking-tight tnum">{formatPaise(result.amountInPaise)}</p>
-          <p className="text-[13px] text-muted-foreground">to {draft.destinationLabel}</p>
-        </div>
-        <DescriptionList
-          items={[
-            { label: 'From', value: accountShortName(draft.source) },
-            { label: 'To', value: `${draft.destinationLabel} · ${draft.destinationDetail}` },
-            {
-              label: 'Reference',
-              value: (
-                <span className="inline-flex max-w-full items-center gap-1">
-                  <span className="break-all font-mono text-[13px]">{result.referenceId}</span>
-                  <CopyButton value={result.referenceId} label="Copy reference" />
-                </span>
-              ),
-            },
-            { label: 'Date', value: `${formatDate(result.createdAt)}, ${formatTime(result.createdAt)}` },
-            ...(draft.note ? [{ label: 'Note', value: draft.note }] : []),
-            { label: 'Status', value: <StatusBadge status={result.status} /> },
-          ]}
-        />
-      </CardContent>
-      <CardFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" onClick={onNew}>
+        </SummaryRow>
+        <SummaryRow label="Date">{`${formatDate(result.createdAt)}, ${formatTime(result.createdAt)}`}</SummaryRow>
+        {draft.note ? <SummaryRow label="Note">{draft.note}</SummaryRow> : null}
+        <SummaryRow label="Status">
+          <StatusBadge status={result.status} />
+        </SummaryRow>
+      </dl>
+
+      <TileFooter sticky={false}>
+        <Button variant="secondary" size="lg" onClick={onNew}>
           New transfer
         </Button>
-        <Button asChild>
+        <Button asChild size="lg">
           <Link to={`/accounts/${draft.source.id}`}>View statement</Link>
         </Button>
-      </CardFooter>
+      </TileFooter>
     </Card>
   );
 }

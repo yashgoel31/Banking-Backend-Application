@@ -5,26 +5,28 @@ import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 export const buttonVariants = cva(
-  'inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[background-color,color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 active:translate-y-px [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
+  // Pills, ink for the one primary action; pressing scales slightly (transform only, so nothing reflows)
+  'inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full font-medium tracking-[-0.01em] transition-[background-color,color,box-shadow,transform,opacity] duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-40 active:scale-[0.97] [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer',
   {
     variants: {
       variant: {
-        primary: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        outline: 'border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground',
-        ghost: 'hover:bg-accent hover:text-accent-foreground',
-        destructive: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
-        success: 'bg-success text-success-foreground shadow-sm hover:bg-success/90',
-        link: 'text-primary underline-offset-4 hover:underline px-0 h-auto',
+        primary: 'bg-ink text-ink-foreground hover:bg-ink/85',
+        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/70 dark:hover:bg-secondary/80',
+        outline: 'bg-transparent text-foreground shadow-[inset_0_0_0_1px_hsl(var(--input))] hover:bg-accent',
+        ghost: 'text-foreground hover:bg-accent',
+        destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+        success: 'bg-success text-success-foreground hover:bg-success/90',
+        link: 'h-auto rounded-md px-0 text-primary hover:underline underline-offset-4 active:scale-100',
       },
       size: {
-        sm: 'h-8 px-3 text-[13px]',
-        md: 'h-10 px-4',
-        lg: 'h-11 px-6 text-[15px]',
+        sm: 'h-8 px-3.5 text-[13px]',
+        md: 'h-10 px-[18px] text-[14px]',
+        lg: 'h-12 px-6 text-[15px]',
         icon: 'size-9',
       },
       block: { true: 'w-full' },
     },
+    compoundVariants: [{ variant: 'link', className: 'h-auto px-0' }],
     defaultVariants: { variant: 'primary', size: 'md' },
   }
 );

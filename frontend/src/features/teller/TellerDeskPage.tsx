@@ -1,40 +1,20 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Ban, CalendarCheck2, Hourglass, Inbox, RotateCw } from 'lucide-react';
+import { Ban, CheckCircle2, Hourglass, Inbox, RotateCw, type LucideIcon } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
-import type { TellerSession, TellerSessionStatus } from '@/lib/api/types';
-import { Discrepancy, PAGE_SIZE, formatBusinessDate, formatDateTime, istToday } from '@/features/branch/components/cash';
+import { cn } from '@/lib/cn';
+import type { TellerSession } from '@/lib/api/types';
+import { Discrepancy, PAGE_SIZE, formatBusinessDate, formatDateTime, formatTimeOnDay, istToday } from '@/features/branch/components/cash';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/data';
-import {
-  Amount,
-  Callout,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  DescriptionList,
-  EmptyState,
-  PageHeader,
-  Skeleton,
-  StatusBadge,
-} from '@/components/ui/primitives';
+import { Amount, Callout, Card, DescriptionList, PageHeader, Skeleton } from '@/components/ui/primitives';
 import { CashDesk } from './components/CashDesk';
 import { AcceptFloatForm, DeclareCountForm } from './components/CountForms';
 
 /** How often the desk checks for a supervisor's action while the teller is waiting on one */
 const POLL_MS = 15_000;
-
-const STATUS_LABEL: Record<TellerSessionStatus, string> = {
-  ISSUED: 'Float issued',
-  OPEN: 'Open',
-  CLOSED: 'Awaiting sign-off',
-  RECONCILED: 'Signed off',
-  CANCELLED: 'Cancelled',
-};
 
 export default function TellerDeskPage() {
   const api = useApi();
@@ -45,25 +25,23 @@ export default function TellerDeskPage() {
     refetchInterval: (q) => (q.state.data?.status === 'OPEN' ? false : POLL_MS),
   });
   const session = query.data ?? null;
+  // An open desk uses the full width; every other state is one calm, centred column
+  const narrow = query.isSuccess && session?.status !== 'OPEN';
 
   return (
-    <div className="space-y-6">
+    <div className={cn('space-y-6 lg:space-y-8', narrow && 'mx-auto max-w-2xl')}>
       <PageHeader
-        eyebrow="Branch"
         title="Cash desk"
         description={session ? `Business date ${formatBusinessDate(session.businessDate)}` : 'Your cash session for the business day.'}
-        actions={session ? <StatusBadge status={session.status} label={STATUS_LABEL[session.status]} /> : null}
       />
       {query.isPending ? (
-        <Card>
-          <CardContent className="space-y-4 pt-6 sm:pt-6">
-            <p role="status" className="sr-only">
-              Loading your cash session…
-            </p>
-            <Skeleton className="h-5 w-48" />
-            <Skeleton className="h-4 w-full max-w-md" />
-            <Skeleton className="h-10 w-full max-w-xs" />
-          </CardContent>
+        <Card className="space-y-4 p-6 sm:p-8">
+          <p role="status" className="sr-only">
+            Loading your cash session…
+          </p>
+          <Skeleton className="h-6 w-48" />
+          <Skeleton className="h-4 w-full max-w-md" />
+          <Skeleton className="h-12 w-full max-w-sm" />
         </Card>
       ) : query.isError && query.data === undefined ? (
         <Card>
@@ -76,38 +54,59 @@ export default function TellerDeskPage() {
   );
 }
 
+/** A state the teller waits in: a bare glyph, a headline and what happens next */
+function StatusTile({
+  icon: Icon,
+  iconClassName,
+  title,
+  children,
+  footer,
+}: {
+  icon: LucideIcon;
+  iconClassName?: string;
+  title: string;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  return (
+    <Card className="px-6 py-10 text-center sm:px-10 sm:py-12">
+      <Icon className={cn('mx-auto size-10 text-muted-foreground', iconClassName)} strokeWidth={1.5} aria-hidden="true" />
+      <h2 className="mt-4 text-title-3">{title}</h2>
+      <div className="mx-auto mt-2 max-w-md space-y-2 text-pretty text-[15px] leading-[22px] text-muted-foreground">{children}</div>
+      {footer}
+    </Card>
+  );
+}
+
 function SessionView({ session, checking, onCheck }: { session: TellerSession | null; checking: boolean; onCheck: () => void }) {
   if (!session) {
     return (
-      <Card>
-        <EmptyState
-          icon={Inbox}
-          title="No float issued yet"
-          description="Ask your supervisor to issue today’s opening float. This page checks for it every 15 seconds."
-          action={
-            <Button variant="outline" size="sm" onClick={onCheck} aria-busy={checking || undefined}>
-              <RotateCw aria-hidden="true" className={checking ? 'animate-spin' : undefined} /> Check now
-            </Button>
-          }
-        />
-      </Card>
+      <StatusTile
+        icon={Inbox}
+        title="No float issued yet"
+        footer={
+          <Button variant="secondary" className="mt-6" onClick={onCheck} aria-busy={checking || undefined}>
+            <RotateCw aria-hidden="true" className={checking ? 'animate-spin' : undefined} /> Check now
+          </Button>
+        }
+      >
+        <p>Ask your supervisor to issue today’s opening float. This page checks for it every 15 seconds.</p>
+      </StatusTile>
     );
   }
 
   switch (session.status) {
     case 'ISSUED':
       return (
-        <Card className="max-w-2xl">
-          <CardHeader>
-            <CardTitle>Count your opening float</CardTitle>
-            <CardDescription>
-              Your supervisor has issued your float. Count every note and coin you were handed and enter the total. The issued amount isn’t
-              shown, so your count is independent.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        <Card className="p-6 sm:p-8">
+          <h2 className="text-title-3">Count your opening float</h2>
+          <p className="mt-2 text-pretty text-[15px] leading-[22px] text-muted-foreground">
+            Your supervisor has issued your float. Count every note and coin you were handed and enter the total. The issued amount isn’t
+            shown, so your count is independent.
+          </p>
+          <div className="mt-6">
             <AcceptFloatForm />
-          </CardContent>
+          </div>
         </Card>
       );
     case 'OPEN':
@@ -116,17 +115,14 @@ function SessionView({ session, checking, onCheck }: { session: TellerSession | 
       return <AwaitingSignOff session={session} />;
     case 'RECONCILED':
       return (
-        <Card className="max-w-2xl">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <CalendarCheck2 className="size-5 text-success" aria-hidden="true" />
-              <CardTitle>Day closed</CardTitle>
-            </div>
-            <CardDescription>Day closed and signed off at {formatDateTime(session.signedOffAt)}.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {session.declaredClosing ? (
+        <StatusTile
+          icon={CheckCircle2}
+          iconClassName="text-success"
+          title="You’re done for the day"
+          footer={
+            session.declaredClosing ? (
               <DescriptionList
+                className="mx-auto mt-6 max-w-sm border-t border-border/70 text-left"
                 items={[
                   { label: 'Your count', value: <Amount paise={session.declaredClosing} /> },
                   ...(session.expectedClosing ? [{ label: 'Expected', value: <Amount paise={session.expectedClosing} /> }] : []),
@@ -135,28 +131,22 @@ function SessionView({ session, checking, onCheck }: { session: TellerSession | 
                     : []),
                 ]}
               />
-            ) : null}
-            <p className="text-sm text-muted-foreground">You’re done for the day. Your next float will appear here when it’s issued.</p>
-          </CardContent>
-        </Card>
+            ) : null
+          }
+        >
+          <p>Day closed and signed off at {formatDateTime(session.signedOffAt)}.</p>
+          <p>Your next float will appear here when it’s issued.</p>
+        </StatusTile>
       );
     case 'CANCELLED':
       return (
-        <Card className="max-w-2xl">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Ban className="size-5 text-muted-foreground" aria-hidden="true" />
-              <CardTitle>Float cancelled</CardTitle>
-            </div>
-            <CardDescription>
-              Your supervisor cancelled the float issued for {formatBusinessDate(session.businessDate)}. Hand back any cash you received
-              from it.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">A new float will appear here when it’s issued. This page checks every 15 seconds.</p>
-          </CardContent>
-        </Card>
+        <StatusTile icon={Ban} title="Float cancelled">
+          <p>
+            Your supervisor cancelled the float issued for {formatBusinessDate(session.businessDate)}. Hand back any cash you received from
+            it.
+          </p>
+          <p>A new float will appear here when it’s issued. This page checks every 15 seconds.</p>
+        </StatusTile>
       );
     default:
       return null;
@@ -174,35 +164,34 @@ function OpenDesk({ session }: { session: TellerSession }) {
   });
   const waiting = pending.data?.length ?? 0;
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:items-start lg:gap-6">
       {stale ? (
-        <Callout tone="warning" title="This session is from a previous business day">
+        <Callout tone="warning" title="This session is from a previous business day" className="lg:col-span-8">
           It was opened for {formatBusinessDate(session.businessDate)}. Close it with your end-of-day count before you handle any cash today.
         </Callout>
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle>Serve a customer</CardTitle>
-            <CardDescription>
-              Session open since {formatDateTime(session.acceptedAt ?? session.openedAt)}. Find the customer’s account, then enter the amount.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CashDesk />
-          </CardContent>
+        <Card className="p-5 sm:p-6 lg:col-span-8 lg:p-8">
+          <div className="mb-5 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <h2 className="text-title-3">Serve a customer</h2>
+            <p className="text-[13px] text-muted-foreground">
+              Open since <span className="tnum">{formatTimeOnDay(session.acceptedAt ?? session.openedAt, session.businessDate)}</span>
+            </p>
+          </div>
+          <CashDesk />
         </Card>
       )}
-      <Card>
-        <CardHeader>
-          <CardTitle>End of day</CardTitle>
-          <CardDescription>
-            When you’ve served your last customer, count all the cash in your drawer and declare the total. Your supervisor then counts it
-            independently to sign off.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <Card className="p-5 sm:p-6 lg:col-span-4">
+        <h2 className="text-headline">End of day</h2>
+        <p className="mt-1 text-pretty text-[14px] leading-5 text-muted-foreground">
+          After your last customer, count all the cash in your drawer and declare the total. A supervisor then counts it independently to sign
+          off.
+        </p>
+        <div className="mt-5 space-y-4">
           {waiting > 0 ? (
-            <Callout tone="warning" title={`${waiting >= PAGE_SIZE ? `${PAGE_SIZE} or more operations are` : waiting === 1 ? '1 operation is' : `${waiting} operations are`} waiting for a supervisor`}>
+            <Callout
+              tone="warning"
+              title={`${waiting >= PAGE_SIZE ? `${PAGE_SIZE} or more operations are` : waiting === 1 ? '1 operation is' : `${waiting} operations are`} waiting for a supervisor`}
+            >
               <p>A supervisor must approve or reject them before you can close.</p>
               <p>
                 <Link to="/teller/operations" className="font-medium text-primary underline-offset-2 hover:underline">
@@ -222,7 +211,7 @@ function OpenDesk({ session }: { session: TellerSession }) {
             successTitle="Session closed"
             successDescription="Your supervisor will now count and sign off."
           />
-        </CardContent>
+        </div>
       </Card>
     </div>
   );
@@ -231,21 +220,13 @@ function OpenDesk({ session }: { session: TellerSession }) {
 function AwaitingSignOff({ session }: { session: TellerSession }) {
   const [redeclaring, setRedeclaring] = useState(false);
   return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <Hourglass className="size-5 text-warning" aria-hidden="true" />
-          <CardTitle>Waiting for supervisor sign-off</CardTitle>
-        </div>
-        <CardDescription>You declared your closing count at {formatDateTime(session.closedAt)}.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <p className="text-sm text-muted-foreground">
-          A supervisor will count your drawer independently and sign off. Keep the drawer sealed until then. This page updates automatically.
-        </p>
-        {redeclaring ? (
-          <div className="space-y-3 rounded-lg border p-4">
-            <p className="text-sm font-medium">Correct your count</p>
+    <StatusTile
+      icon={Hourglass}
+      title="Waiting for supervisor sign-off"
+      footer={
+        redeclaring ? (
+          <div className="mx-auto mt-6 max-w-sm space-y-4 border-t border-border/70 pt-6 text-left">
+            <p className="text-headline">Correct your count</p>
             <DeclareCountForm
               label="Corrected cash count"
               submitLabel="Re-declare count"
@@ -258,19 +239,22 @@ function AwaitingSignOff({ session }: { session: TellerSession }) {
               successDescription="Your supervisor will count against your corrected figure."
               onDone={() => setRedeclaring(false)}
             />
-            <Button variant="ghost" size="sm" onClick={() => setRedeclaring(false)}>
+            <Button variant="ghost" block onClick={() => setRedeclaring(false)}>
               Keep my count
             </Button>
           </div>
         ) : (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <p className="text-sm text-muted-foreground">Miscounted?</p>
-            <Button variant="outline" size="sm" onClick={() => setRedeclaring(true)}>
+          <div className="mt-6 flex flex-col items-center gap-1 sm:flex-row sm:justify-center sm:gap-2">
+            <p className="text-[14px] text-muted-foreground">Miscounted?</p>
+            <Button variant="link" onClick={() => setRedeclaring(true)}>
               Re-declare your count
             </Button>
           </div>
-        )}
-      </CardContent>
-    </Card>
+        )
+      }
+    >
+      <p>You declared your closing count at {formatDateTime(session.closedAt)}.</p>
+      <p>A supervisor will count your drawer independently and sign off. Keep the drawer sealed until then. This page updates automatically.</p>
+    </StatusTile>
   );
 }

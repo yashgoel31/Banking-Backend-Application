@@ -1,6 +1,6 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
-import { Lock, LockOpen, SlidersHorizontal, Wallet, XCircle } from 'lucide-react';
+import { Wallet } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
 import type { AccountStatus, BankAccount } from '@/lib/api/types';
@@ -10,13 +10,15 @@ import { formatAccountNumber } from '@/lib/validation';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/data';
 import { ConfirmDialog } from '@/components/ui/overlays';
-import { Amount, Callout, Card, CardContent, CardDescription, CardHeader, CardTitle, CopyButton, EmptyState, Skeleton, StatusBadge } from '@/components/ui/primitives';
+import { cn } from '@/lib/cn';
+import { Amount, Callout, CopyButton, EmptyState, Skeleton } from '@/components/ui/primitives';
 import { DailyLimitDialog } from './DailyLimitDialog';
 import { RecentTransactions } from './RecentTransactions';
 import { applyAccountUpdate } from './accountCache';
 import { formatDate } from './format';
 import { hasCode, isRefusal } from './hooks';
 import { OutcomeCallout, outcomeFromError, type Outcome } from './Outcome';
+import { Panel } from './layout';
 
 type StatusAction = 'freeze' | 'unfreeze' | 'close';
 
@@ -30,12 +32,47 @@ const DONE: Record<StatusAction, [string, string]> = {
 function Stat({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[12px] font-medium text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 text-[15px] font-semibold tnum">{children}</dd>
-      {hint ? <dd className="mt-0.5 text-[12px] text-muted-foreground">{hint}</dd> : null}
+      <dt className="text-[13px] text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-[15px] font-medium tracking-[-0.01em] tnum">{children}</dd>
+      {hint ? <dd className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">{hint}</dd> : null}
     </div>
   );
 }
+
+const STATUS_LOOK: Record<AccountStatus, { label: string; dot: string; text?: string }> = {
+  ACTIVE: { label: 'Active', dot: 'bg-success' },
+  FROZEN: { label: 'Frozen', dot: 'bg-destructive', text: 'text-destructive' },
+  CLOSED: { label: 'Closed', dot: 'bg-muted-foreground' },
+};
+
+/** Status as a word with a dot: it varies and matters to staff, but it isn't a badge on every row */
+function AccountStatusText({ status }: { status: AccountStatus }) {
+  const look = STATUS_LOOK[status];
+  return (
+    <span className={cn('inline-flex items-center gap-1.5', look.text)}>
+      <span className={cn('size-2 shrink-0 rounded-full', look.dot)} aria-hidden="true" />
+      <span>{look.label}</span>
+    </span>
+  );
+}
+
+/** A small card swatch, so savings and current read apart at a glance (as on the customer's own pages) */
+function AccountSwatch({ type }: { type: BankAccount['accountType'] }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'relative mt-0.5 h-7 w-10 shrink-0 overflow-hidden rounded-[6px] shadow-[inset_0_0_0_0.5px_rgb(0_0_0/0.12)] dark:shadow-[inset_0_0_0_1px_rgb(255_255_255/0.16)]',
+        type === 'SAVINGS' ? 'bg-gradient-to-br from-[#2c2c2e] to-[#0b0b0c]' : 'bg-gradient-to-br from-[#2f7bf5] to-[#0a4fc4]'
+      )}
+    >
+      <span className="absolute bottom-1 left-1 h-[3px] w-3 rounded-full bg-white/70" />
+    </span>
+  );
+}
+
+/** Pills are 32px on desktop and grow to a 44px touch target on phones */
+const controlSize = 'max-sm:h-11 max-sm:px-4 max-sm:text-[14px]';
 
 function AccountControls({ account, customerId, balance }: { account: BankAccount; customerId: string; balance: string | undefined }) {
   const api = useApi();
@@ -111,29 +148,29 @@ function AccountControls({ account, customerId, balance }: { account: BankAccoun
       <OutcomeCallout outcome={outcome} onDismiss={() => setOutcome(null)} />
       <div className="flex flex-wrap gap-2">
         {account.status === 'ACTIVE' ? (
-          <Button variant="outline" size="sm" aria-label={`Freeze account ending ${last4}`} onClick={() => setAction('freeze')}>
-            <Lock aria-hidden="true" /> Freeze
+          <Button variant="secondary" size="sm" className={controlSize} aria-label={`Freeze account ending ${last4}`} onClick={() => setAction('freeze')}>
+            Freeze
           </Button>
         ) : (
-          <Button variant="outline" size="sm" aria-label={`Unfreeze account ending ${last4}`} onClick={() => setAction('unfreeze')}>
-            <LockOpen aria-hidden="true" /> Unfreeze
+          <Button variant="secondary" size="sm" className={controlSize} aria-label={`Unfreeze account ending ${last4}`} onClick={() => setAction('unfreeze')}>
+            Unfreeze
           </Button>
         )}
-        <Button variant="outline" size="sm" aria-label={`Set daily limit for account ending ${last4}`} onClick={() => setLimitOpen(true)}>
-          <SlidersHorizontal aria-hidden="true" /> Set daily limit
+        <Button variant="secondary" size="sm" className={controlSize} aria-label={`Set daily limit for account ending ${last4}`} onClick={() => setLimitOpen(true)}>
+          Set daily limit
         </Button>
         <Button
           variant="ghost"
           size="sm"
-          className="text-destructive hover:bg-destructive-soft hover:text-destructive"
+          className={cn(controlSize, 'text-destructive hover:bg-destructive-soft hover:text-destructive')}
           aria-label={`Close account ending ${last4}`}
           onClick={() => setAction('close')}
         >
-          <XCircle aria-hidden="true" /> Close account
+          Close account
         </Button>
       </div>
       {account.status === 'FROZEN' ? (
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-[13px] leading-[18px] text-muted-foreground">
           Dual control: only an administrator other than the one who froze this account can unfreeze it.
         </p>
       ) : null}
@@ -165,42 +202,52 @@ function AccountPanel({ account, customerId, canAdminister }: { account: BankAcc
   const ceiling = account.bankLimitCeilingPaise;
 
   return (
-    <section aria-label={`${typeLabel} ending ${last4}`} className="space-y-4 rounded-lg border p-4 sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold">{typeLabel}</h3>
-          <p className="flex items-center gap-1 font-mono text-[13px] text-muted-foreground tnum">
-            {formatAccountNumber(account.accountNumber)}
-            <CopyButton value={account.accountNumber} label="Copy account number" />
-          </p>
-          <p className="text-[12px] text-muted-foreground">Opened {formatDate(account.createdAt)}</p>
-        </div>
-        <StatusBadge status={account.status} />
-      </div>
-      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Stat label="Balance">
-          {balance.isPending ? (
-            <Skeleton className="mt-1 h-5 w-28" />
-          ) : balance.isError ? (
-            <span className="flex items-center gap-2 text-[13px] font-normal text-muted-foreground">
-              Unavailable
-              <Button variant="link" className="text-[13px]" aria-label="Retry loading the balance" onClick={() => void balance.refetch()}>
-                Retry
-              </Button>
+    <section aria-label={`${typeLabel} ending ${last4}`} className="py-5 first:pt-1 last:pb-0">
+      <div className="flex items-start gap-3.5">
+        <AccountSwatch type={account.accountType} />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[15px] font-medium leading-5 tracking-[-0.01em]">{typeLabel}</h3>
+          <p className="flex flex-wrap items-center gap-x-1.5 text-[13px] leading-[18px] text-muted-foreground">
+            <span className="inline-flex items-center whitespace-nowrap tnum">
+              {formatAccountNumber(account.accountNumber)}
+              <CopyButton value={account.accountNumber} label="Copy account number" className="-my-1.5 size-7 max-sm:size-10" />
             </span>
-          ) : (
-            <Amount paise={balance.data.balanceInPaise} className="font-semibold" />
-          )}
-        </Stat>
-        <Stat label="Daily limit">{formatPaise(account.dailyLimitPaise)}</Stat>
-        <Stat label="Bank ceiling" hint={ceiling ? 'The customer can’t raise their limit above this.' : 'The customer’s own cap applies.'}>
-          {ceiling ? formatPaise(ceiling) : <span className="font-normal text-muted-foreground">None set</span>}
-        </Stat>
-      </dl>
-      {canAdminister && account.status !== 'CLOSED' ? (
-        <AccountControls account={account} customerId={customerId} balance={balance.data?.balanceInPaise} />
-      ) : null}
-      <RecentTransactions accountId={account.id} last4={last4} />
+            <span>Opened {formatDate(account.createdAt)}</span>
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[17px] font-semibold leading-5 tracking-[-0.02em]">
+            {balance.isPending ? (
+              <Skeleton className="h-5 w-28" />
+            ) : balance.isError ? (
+              <span className="flex items-center gap-2 text-[13px] font-normal text-muted-foreground">
+                Unavailable
+                <Button variant="link" className="text-[13px]" aria-label="Retry loading the balance" onClick={() => void balance.refetch()}>
+                  Retry
+                </Button>
+              </span>
+            ) : (
+              <Amount paise={balance.data.balanceInPaise} className="font-semibold" />
+            )}
+          </div>
+          <p className="text-[13px] leading-[18px] text-muted-foreground">Balance</p>
+        </div>
+      </div>
+      <div className="mt-4 space-y-4 sm:pl-[54px]">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+          <Stat label="Status">
+            <AccountStatusText status={account.status} />
+          </Stat>
+          <Stat label="Daily limit">{formatPaise(account.dailyLimitPaise)}</Stat>
+          <Stat label="Bank ceiling" hint={ceiling ? 'The customer can’t raise their limit above this.' : undefined}>
+            {ceiling ? formatPaise(ceiling) : <span className="font-normal text-muted-foreground">None set</span>}
+          </Stat>
+        </dl>
+        {canAdminister && account.status !== 'CLOSED' ? (
+          <AccountControls account={account} customerId={customerId} balance={balance.data?.balanceInPaise} />
+        ) : null}
+        <RecentTransactions accountId={account.id} last4={last4} />
+      </div>
     </section>
   );
 }
@@ -210,32 +257,45 @@ export function AccountsSection({
   query,
   canAdminister,
   me,
+  className,
 }: {
   customerId: string;
   query: UseQueryResult<BankAccount[]>;
   canAdminister: boolean;
   me: string;
+  className?: string;
 }) {
-  const titleId = useId();
   const accounts = query.data;
   return (
-    <Card role="region" aria-labelledby={titleId}>
-      <CardHeader>
-        <CardTitle id={titleId}>Accounts{accounts?.length ? <span className="ml-1.5 font-normal text-muted-foreground tnum">{accounts.length}</span> : null}</CardTitle>
-        <CardDescription>Balances and transactions are read live from the ledger; staff reads are audited.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {query.isPending ? (
-          <div className="space-y-3" aria-hidden="true">
-            <Skeleton className="h-28 w-full" />
-            <Skeleton className="h-28 w-full" />
-          </div>
-        ) : query.isError ? (
-          <ErrorState error={query.error} onRetry={() => void query.refetch()} className="py-6" />
-        ) : accounts!.length === 0 ? (
-          <EmptyState icon={Wallet} title="No accounts" description="The customer can open an account once their KYC is verified." className="py-6" />
-        ) : (
-          accounts!.map((account) => (
+    <Panel
+      className={className}
+      title={
+        <>
+          Accounts{accounts?.length ? <> <span className="ml-0.5 font-normal text-muted-foreground tnum">{accounts.length}</span></> : null}
+        </>
+      }
+      description="Read live from the ledger. Staff reads are audited."
+    >
+      {query.isPending ? (
+        <div className="space-y-5 pt-1" aria-hidden="true">
+          {[0, 1].map((i) => (
+            <div key={i} className="flex items-start gap-3.5">
+              <Skeleton className="h-7 w-10 rounded-[6px]" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-3 w-28" />
+              </div>
+              <Skeleton className="h-5 w-24" />
+            </div>
+          ))}
+        </div>
+      ) : query.isError ? (
+        <ErrorState error={query.error} onRetry={() => void query.refetch()} className="py-6" />
+      ) : accounts!.length === 0 ? (
+        <EmptyState icon={Wallet} title="No accounts" description="The customer can open an account once their KYC is verified." className="py-8" />
+      ) : (
+        <div className="divide-y divide-border/70">
+          {accounts!.map((account) => (
             <AccountPanel
               key={account.id}
               account={account}
@@ -243,9 +303,9 @@ export function AccountsSection({
               // On their own account an administrator has only a customer's rights
               canAdminister={canAdminister && account.customerId !== me}
             />
-          ))
-        )}
-      </CardContent>
-    </Card>
+          ))}
+        </div>
+      )}
+    </Panel>
   );
 }

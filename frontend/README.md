@@ -12,6 +12,20 @@ after sign-in:
 | Support | Read-only customer 360, user directory, teller sessions, cash operations, alerts, notification log |
 | Bank administrator | Overview, four-eyes approvals, staff & user directory, teller sessions (issue float, blind sign-off), cash approvals, customer account controls |
 
+## Look and feel
+
+The interface follows [the BankSphere design system](../design-system/banksphere/MASTER.md): white tiles on a soft
+canvas (true black in dark mode), Inter with optical sizing, ink for the one primary action, blue for links and
+focus, colour only where it means something (money in, attention, errors).
+
+- **Customers** get a consumer layout: a translucent top bar on desktop; on phones a compact header and a bottom
+  tab bar (Overview, Accounts, Transfer, Payees, Cash) within thumb reach.
+- **Staff** get a quiet sidebar on desktop; on phones the same tab bar, with a "More" sheet when a role has more
+  than five destinations.
+- Dialogs are centred panels on desktop and bottom sheets on phones. Inputs are 44 px tall with 16 px text on
+  phones (no zoom on focus); safe areas are respected on notched devices.
+- Personal settings (profile, security, appearance, sign out) live in the account menu (the avatar).
+
 ## Security model in the browser
 
 - **Same origin.** nginx serves the app and proxies `/api/` to the gateway, so there is no CORS and no

@@ -1,16 +1,17 @@
-import { useId, useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
-import { KeyRound, Mail, UserCheck, UserX } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
 import { notifyError, notifySuccess } from '@/lib/notify';
 import type { DirectoryUser } from '@/lib/api/types';
-import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/cn';
 import { ConfirmDialog } from '@/components/ui/overlays';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton, StatusBadge } from '@/components/ui/primitives';
+import { Skeleton, StatusBadge } from '@/components/ui/primitives';
 import { hasCode, isRefusal } from './hooks';
 import { OutcomeCallout, outcomeFromError, type Outcome } from './Outcome';
+import { Facts, Panel } from './layout';
 
 const directoryParams = (userId: string) => ({ q: userId, limit: 5 });
 
@@ -27,12 +28,19 @@ export function useDirectoryUser(userId: string, enabled: boolean): UseQueryResu
 
 type Action = 'disable' | 'enable' | 'reset';
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+/** An action as a row of the tile, as in Settings: blue for ordinary actions, red for destructive ones */
+function ActionRow({ destructive, onClick, children }: { destructive?: boolean; onClick: () => void; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2">
-      <dt className="text-[13px] text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate text-right text-sm">{children}</dd>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex h-12 w-full cursor-pointer items-center text-left text-[15px] tracking-[-0.01em] transition-opacity hover:opacity-70 focus-visible:rounded-lg focus-visible:ring-2 focus-visible:ring-ring',
+        destructive ? 'text-destructive' : 'text-primary'
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -47,16 +55,17 @@ export function SignInAccessCard({
   query,
   canManage,
   me,
+  className,
 }: {
   userId: string;
   name: string;
   query: UseQueryResult<DirectoryUser | null>;
   canManage: boolean;
   me: string;
+  className?: string;
 }) {
   const api = useApi();
   const queryClient = useQueryClient();
-  const titleId = useId();
   const [action, setAction] = useState<Action | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const target = query.data ?? null;
@@ -134,71 +143,66 @@ export function SignInAccessCard({
   const self = userId === me;
 
   return (
-    <Card role="region" aria-labelledby={titleId}>
-      <CardHeader>
-        <CardTitle id={titleId}>Sign-in &amp; security</CardTitle>
-        <CardDescription>The customer’s online banking login.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {query.isPending ? (
-          <div className="space-y-3" aria-hidden="true">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-2/3" />
-          </div>
-        ) : known ? (
-          <dl className="divide-y">
-            <Row label="Email">
-              <span title={target.email}>{target.email}</span>
-            </Row>
-            <Row label="Sign-in">
-              <StatusBadge status={target.isActive ? 'ACTIVE' : 'DISABLED'} label={target.isActive ? 'Enabled' : 'Disabled'} />
-            </Row>
-            <Row label="Authenticator">{target.mfaEnabled ? 'On' : 'Off'}</Row>
-            <Row label="Email verified">{target.isEmailVerified ? 'Yes' : 'No'}</Row>
-          </dl>
+    <Panel title="Sign-in & security" description="The customer’s online banking login." className={className} bodyClassName="space-y-4">
+      {query.isPending ? (
+        <div className="space-y-3 pt-1" aria-hidden="true">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      ) : known ? (
+        <Facts
+          items={[
+            {
+              label: 'Email',
+              value: (
+                <span className="block truncate" title={target.email}>
+                  {target.email}
+                </span>
+              ),
+            },
+            {
+              label: 'Sign-in',
+              value: <StatusBadge status={target.isActive ? 'ACTIVE' : 'DISABLED'} label={target.isActive ? 'Enabled' : 'Disabled'} />,
+            },
+            { label: 'Authenticator', value: target.mfaEnabled ? 'On' : 'Off' },
+            { label: 'Email verified', value: target.isEmailVerified ? 'Yes' : 'No' },
+          ]}
+        />
+      ) : (
+        <p className="text-[14px] leading-5 text-muted-foreground">
+          {query.isError ? 'Sign-in status couldn’t be loaded.' : 'Sign-in status isn’t available for this customer.'}
+        </p>
+      )}
+      {known ? (
+        <Link
+          to={`/notifications?${new URLSearchParams({ recipient: target.email }).toString()}`}
+          className="-mx-2 flex h-11 items-center justify-between rounded-xl px-2 text-[15px] tracking-[-0.01em] text-primary transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Emails sent to this customer
+          <ChevronRight className="size-4 text-muted-foreground/60" aria-hidden="true" />
+        </Link>
+      ) : null}
+      <OutcomeCallout outcome={outcome} onDismiss={() => setOutcome(null)} />
+      {canManage && !query.isPending ? (
+        self ? (
+          <p className="text-[14px] leading-5 text-muted-foreground">You can’t change your own sign-in. Another administrator would have to.</p>
         ) : (
-          <p className="text-[13px] text-muted-foreground">
-            {query.isError ? 'Sign-in status couldn’t be loaded.' : 'Sign-in status isn’t available for this customer.'}
-          </p>
-        )}
-        {known ? (
-          <Link
-            to={`/notifications?${new URLSearchParams({ recipient: target.email }).toString()}`}
-            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-primary hover:underline"
-          >
-            <Mail className="size-3.5" aria-hidden="true" /> Emails sent to this customer
-          </Link>
-        ) : null}
-        <OutcomeCallout outcome={outcome} onDismiss={() => setOutcome(null)} />
-        {canManage && !query.isPending ? (
-          self ? (
-            <p className="text-[13px] text-muted-foreground">You can’t change your own sign-in. Another administrator would have to.</p>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex flex-col gap-2">
-                {!known || target.isActive ? (
-                  <Button variant="outline" className="justify-start text-destructive hover:text-destructive" onClick={() => setAction('disable')}>
-                    <UserX aria-hidden="true" /> Disable sign-in
-                  </Button>
-                ) : null}
-                {!known || !target.isActive ? (
-                  <Button variant="outline" className="justify-start" onClick={() => setAction('enable')}>
-                    <UserCheck aria-hidden="true" /> Enable sign-in
-                  </Button>
-                ) : null}
-                {!known || target.mfaEnabled ? (
-                  <Button variant="outline" className="justify-start" onClick={() => setAction('reset')}>
-                    <KeyRound aria-hidden="true" /> Reset authenticator
-                  </Button>
-                ) : null}
-              </div>
-              <p className="text-[12.5px] text-muted-foreground">
-                Dual control: if you disable sign-in, a different administrator must re-enable it.
-              </p>
+          <div>
+            <div className="divide-y divide-border/70 border-y border-border/70">
+              {!known || target.mfaEnabled ? <ActionRow onClick={() => setAction('reset')}>Reset authenticator</ActionRow> : null}
+              {!known || !target.isActive ? <ActionRow onClick={() => setAction('enable')}>Enable sign-in</ActionRow> : null}
+              {!known || target.isActive ? (
+                <ActionRow destructive onClick={() => setAction('disable')}>
+                  Disable sign-in
+                </ActionRow>
+              ) : null}
             </div>
-          )
-        ) : null}
-      </CardContent>
+            <p className="mt-3 text-[13px] leading-[18px] text-muted-foreground">
+              Dual control: if you disable sign-in, a different administrator must re-enable it.
+            </p>
+          </div>
+        )
+      ) : null}
       {dialog ? (
         <ConfirmDialog
           open
@@ -212,6 +216,6 @@ export function SignInAccessCard({
           onConfirm={() => run(action!)}
         />
       ) : null}
-    </Card>
+    </Panel>
   );
 }

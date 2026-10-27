@@ -47,7 +47,8 @@ describe('KycQueuePage', () => {
     expect(screen.getByRole('heading', { name: 'KYC review' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Pending' })).toHaveAttribute('aria-selected', 'true');
     const row = (await screen.findByRole('button', { name: 'Open Asha Rao' })).closest('tr') as HTMLElement;
-    expect(within(row).getByText('Pending review')).toBeInTheDocument();
+    // The tab already says the status, so rows don't repeat it
+    expect(within(row).queryByText('Pending review')).not.toBeInTheDocument();
     expect(within(row).getByText('+91 ••••• 3210')).toBeInTheDocument();
     expect(within(row).queryByText('+919876543210')).not.toBeInTheDocument();
     expect(within(row).getByText('4 days')).toBeInTheDocument();

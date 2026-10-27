@@ -4,8 +4,9 @@ import {
   BellRing,
   ClipboardCheck,
   HandCoins,
+  House,
   Landmark,
-  LayoutDashboard,
+  LayoutGrid,
   ReceiptText,
   ScanFace,
   Search,
@@ -23,6 +24,8 @@ import type { Role } from '@/lib/auth/session';
 export interface NavItem {
   to: string;
   label: string;
+  /** Tab-bar label on phones; always a word of `label`, so the visible text stays part of the accessible name */
+  short?: string;
   icon: LucideIcon;
 }
 
@@ -31,101 +34,109 @@ export interface NavSection {
   items: NavItem[];
 }
 
-const security: NavItem = { to: '/settings/security', label: 'Security', icon: ShieldCheck };
-
+/**
+ * Where each role works. Personal settings (profile, security) are not destinations: they live in the
+ * account menu, see ACCOUNT_LINKS.
+ */
 export const NAVIGATION: Record<Role, NavSection[]> = {
   CUSTOMER: [
-    { items: [{ to: '/dashboard', label: 'Overview', icon: LayoutDashboard }, { to: '/accounts', label: 'Accounts', icon: Wallet }] },
     {
-      title: 'Move money',
       items: [
+        { to: '/dashboard', label: 'Overview', icon: House },
+        { to: '/accounts', label: 'Accounts', icon: Wallet },
         { to: '/transfer', label: 'Transfer', icon: ArrowLeftRight },
         { to: '/payees', label: 'Payees', icon: Users },
-        { to: '/cash-withdrawal', label: 'Cash withdrawal', icon: Banknote },
+        { to: '/cash-withdrawal', label: 'Cash withdrawal', short: 'Cash', icon: Banknote },
       ],
     },
-    { title: 'Settings', items: [{ to: '/profile', label: 'Profile & KYC', icon: UserRound }, security] },
   ],
   TELLER: [
     {
       title: 'Branch',
       items: [
-        { to: '/teller', label: 'Cash desk', icon: Landmark },
-        { to: '/teller/operations', label: 'My operations', icon: ReceiptText },
+        { to: '/teller', label: 'Cash desk', short: 'Desk', icon: Landmark },
+        { to: '/teller/operations', label: 'My operations', short: 'Operations', icon: ReceiptText },
       ],
     },
-    { title: 'Settings', items: [security] },
   ],
   KYC_OFFICER: [
     {
       title: 'Compliance',
       items: [
-        { to: '/kyc', label: 'KYC review', icon: ScanFace },
+        { to: '/kyc', label: 'KYC review', short: 'KYC', icon: ScanFace },
         { to: '/customers', label: 'Customers', icon: Search },
       ],
     },
-    { title: 'Settings', items: [security] },
   ],
   FRAUD_ANALYST: [
     {
       title: 'Risk',
       items: [
-        { to: '/fraud', label: 'Fraud alerts', icon: Siren },
-        { to: '/notifications', label: 'Notification log', icon: BellRing },
+        { to: '/fraud', label: 'Fraud alerts', short: 'Alerts', icon: Siren },
+        { to: '/notifications', label: 'Notifications', icon: BellRing },
       ],
     },
-    { title: 'Settings', items: [security] },
   ],
   SUPPORT: [
     {
       title: 'Customers',
       items: [
-        { to: '/customers', label: 'Customer lookup', icon: Search },
-        { to: '/directory', label: 'User directory', icon: Users },
+        { to: '/customers', label: 'Customers', icon: Search },
+        { to: '/directory', label: 'User directory', short: 'Directory', icon: Users },
       ],
     },
     {
       title: 'Operations',
       items: [
-        { to: '/teller-sessions', label: 'Teller sessions', icon: Vault },
-        { to: '/cash-operations', label: 'Cash operations', icon: HandCoins },
-        { to: '/fraud', label: 'Fraud alerts', icon: Siren },
-        { to: '/notifications', label: 'Notification log', icon: BellRing },
+        { to: '/teller-sessions', label: 'Teller sessions', short: 'Sessions', icon: Vault },
+        { to: '/cash-operations', label: 'Cash operations', short: 'Cash', icon: HandCoins },
+        { to: '/fraud', label: 'Fraud alerts', short: 'Alerts', icon: Siren },
+        { to: '/notifications', label: 'Notifications', icon: BellRing },
       ],
     },
-    { title: 'Settings', items: [security] },
   ],
   BANK_ADMIN: [
     {
       items: [
-        { to: '/overview', label: 'Overview', icon: LayoutDashboard },
+        { to: '/overview', label: 'Overview', icon: LayoutGrid },
         { to: '/approvals', label: 'Approvals', icon: Stamp },
       ],
     },
     {
       title: 'Branch cash',
       items: [
-        { to: '/teller-sessions', label: 'Teller sessions', icon: Vault },
-        { to: '/cash-operations', label: 'Cash approvals', icon: HandCoins },
+        { to: '/teller-sessions', label: 'Teller sessions', short: 'Sessions', icon: Vault },
+        { to: '/cash-operations', label: 'Cash approvals', short: 'Cash', icon: HandCoins },
       ],
     },
     {
-      title: 'People & accounts',
+      title: 'People and accounts',
       items: [
-        { to: '/directory', label: 'Staff & users', icon: Users },
+        { to: '/directory', label: 'Staff & users', short: 'Staff', icon: Users },
         { to: '/customers', label: 'Customers', icon: Search },
-        { to: '/kyc', label: 'KYC status', icon: ClipboardCheck },
+        { to: '/kyc', label: 'KYC status', short: 'KYC', icon: ClipboardCheck },
       ],
     },
     {
       title: 'Oversight',
       items: [
-        { to: '/fraud', label: 'Fraud alerts', icon: Siren },
-        { to: '/notifications', label: 'Notification log', icon: BellRing },
+        { to: '/fraud', label: 'Fraud alerts', short: 'Alerts', icon: Siren },
+        { to: '/notifications', label: 'Notifications', icon: BellRing },
       ],
     },
-    { title: 'Settings', items: [security] },
   ],
+};
+
+const security: NavItem = { to: '/settings/security', label: 'Security', icon: ShieldCheck };
+
+/** Personal settings, reached from the account menu */
+export const ACCOUNT_LINKS: Record<Role, NavItem[]> = {
+  CUSTOMER: [{ to: '/profile', label: 'Profile & KYC', icon: UserRound }, security],
+  TELLER: [security],
+  KYC_OFFICER: [security],
+  FRAUD_ANALYST: [security],
+  SUPPORT: [security],
+  BANK_ADMIN: [security],
 };
 
 export const HOME: Record<Role, string> = {

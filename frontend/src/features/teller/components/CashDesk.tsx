@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { useForm } from 'react-hook-form';
+import { useForm, type UseFormRegisterReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, Clock, Search } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Clock, Search, UserRound } from 'lucide-react';
 import { useApi, useUser } from '@/lib/auth/AuthProvider';
 import { describeError, isApiError } from '@/lib/api/errors';
 import type { AccountLookup, CashOperationResult, CashOperationType } from '@/lib/api/types';
@@ -13,10 +13,10 @@ import { newIdempotencyKey } from '@/lib/notify';
 import { qk } from '@/lib/query';
 import { accountNumberSchema, maskAccountNumber, rupeesSchema } from '@/lib/validation';
 import { useStepUp } from '@/features/security/StepUp';
-import { ACCOUNT_TYPE_LABEL, formatDateTime, shortId } from '@/features/branch/components/cash';
+import { ACCOUNT_TYPE_LABEL, LargeMoneyInput, formatDateTime, shortId } from '@/features/branch/components/cash';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/input';
-import { Callout, CopyButton, DescriptionList, MoneyInput, Skeleton, StatusBadge } from '@/components/ui/primitives';
+import { Avatar, Callout, CopyButton, DescriptionList, Skeleton, StatusBadge } from '@/components/ui/primitives';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/overlays';
 
 const findSchema = z.object({ accountNumber: accountNumberSchema });
@@ -48,24 +48,24 @@ const WORDS: Record<CashOperationType, { noun: string; title: string }> = {
   WITHDRAWAL: { noun: 'withdrawal', title: 'Withdrawal' },
 };
 
-/** The two cash transactions a teller can start, each in its own tab */
+/** The two cash transactions a teller can start: a two-segment control, then the steps of the chosen one */
 export function CashDesk() {
   const [tab, setTab] = useState<'deposit' | 'withdrawal'>('deposit');
   const [busy, setBusy] = useState(false);
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
-      <TabsList aria-label="Transaction type">
-        <TabsTrigger value="deposit" disabled={busy}>
+      <TabsList aria-label="Transaction type" className="grid h-11 w-full grid-cols-2 p-1 sm:max-w-sm">
+        <TabsTrigger value="deposit" disabled={busy} className="h-9 text-[15px]">
           Deposit
         </TabsTrigger>
-        <TabsTrigger value="withdrawal" disabled={busy}>
+        <TabsTrigger value="withdrawal" disabled={busy} className="h-9 text-[15px]">
           Withdrawal
         </TabsTrigger>
       </TabsList>
-      <TabsContent value="deposit" className="mt-5">
+      <TabsContent value="deposit" className="mt-6">
         <CashFlow type="DEPOSIT" onBusyChange={setBusy} />
       </TabsContent>
-      <TabsContent value="withdrawal" className="mt-5">
+      <TabsContent value="withdrawal" className="mt-6">
         <CashFlow type="WITHDRAWAL" onBusyChange={setBusy} />
       </TabsContent>
     </Tabs>
@@ -240,24 +240,31 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
     return (
       <form onSubmit={onFind} noValidate className="space-y-4">
         {lookupProblem ? <ProblemCallout problem={lookupProblem} /> : null}
-        <Field label="Account number" error={findForm.formState.errors.accountNumber?.message} hint="12 digits. Spaces are fine.">
-          {(p) => (
-            <Input
-              {...p}
-              {...findForm.register('accountNumber')}
-              inputMode="numeric"
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={20}
-              placeholder="1001 2345 6789"
-              className="max-w-xs font-mono tnum"
-              autoFocus
-            />
-          )}
-        </Field>
-        <Button type="submit" loading={findForm.formState.isSubmitting}>
-          <Search aria-hidden="true" /> Find account
-        </Button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+          <Field
+            label="Account number"
+            error={findForm.formState.errors.accountNumber?.message}
+            hint="12 digits. Spaces are fine."
+            className="min-w-0 flex-1 sm:max-w-sm"
+          >
+            {(p) => (
+              <Input
+                {...p}
+                {...findForm.register('accountNumber')}
+                inputMode="numeric"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={20}
+                placeholder="1001 2345 6789"
+                className="h-12 text-[19px] font-medium tracking-[0.06em] tnum placeholder:font-normal placeholder:tracking-[0.06em] sm:text-[19px]"
+                autoFocus
+              />
+            )}
+          </Field>
+          <Button type="submit" size="lg" className="sm:mt-[26px]" loading={findForm.formState.isSubmitting}>
+            <Search aria-hidden="true" /> Find account
+          </Button>
+        </div>
       </form>
     );
   }
@@ -269,38 +276,39 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
   if (step.kind === 'done') {
     const executed = step.result.status === 'EXECUTED';
     return (
-      <section aria-labelledby={headingId} className="space-y-4">
-        <div className="flex items-start gap-3">
-          <span className={executed ? 'text-success' : 'text-warning'}>
-            {executed ? <CheckCircle2 className="size-6" aria-hidden="true" /> : <Clock className="size-6" aria-hidden="true" />}
-          </span>
-          <div className="space-y-1">
-            <h3 id={headingId} ref={resultRef} tabIndex={-1} className="text-base font-semibold outline-none">
-              {executed ? `${words.title} completed` : 'Sent to a supervisor for approval'}
-            </h3>
-            {executed ? (
-              <p className="text-sm text-muted-foreground">
-                {type === 'WITHDRAWAL'
-                  ? `Hand ${formatPaise(step.intent.amountInPaise)} to the customer now.`
-                  : 'Put the cash in your drawer and give the customer the reference.'}
+      <section aria-labelledby={headingId} className="space-y-6">
+        <div className="text-center">
+          {executed ? (
+            <CheckCircle2 className="mx-auto size-10 text-success" strokeWidth={1.6} aria-hidden="true" />
+          ) : (
+            <Clock className="mx-auto size-10 text-warning" strokeWidth={1.6} aria-hidden="true" />
+          )}
+          <h3 id={headingId} ref={resultRef} tabIndex={-1} className="mt-3 text-title-3 outline-none">
+            {executed ? `${words.title} completed` : 'Sent to a supervisor for approval'}
+          </h3>
+          <p className="mt-1 text-[32px] font-semibold leading-10 tracking-[-0.03em] tnum">{formatPaise(step.intent.amountInPaise)}</p>
+          {executed ? (
+            <p className="mx-auto mt-2 max-w-md text-pretty text-[15px] leading-[22px] text-muted-foreground">
+              {type === 'WITHDRAWAL'
+                ? `Hand ${formatPaise(step.intent.amountInPaise)} to the customer now.`
+                : 'Put the cash in your drawer and give the customer the reference.'}
+            </p>
+          ) : (
+            <div className="mx-auto mt-2 max-w-md space-y-2 text-pretty text-[15px] leading-[22px] text-muted-foreground">
+              <p>
+                This {words.noun} is above the single-approval limit, or it would take your total for today past your daily limit, so a
+                second person must approve it.
               </p>
-            ) : (
-              <div className="space-y-2 text-sm text-muted-foreground">
-                <p>
-                  This {words.noun} is above the single-approval limit, or it would take your total for today past your daily limit, so a
-                  second person must approve it.
-                </p>
-                <p className="font-medium text-foreground">
-                  {type === 'WITHDRAWAL'
-                    ? 'Don’t hand over any cash until it’s approved. If it’s rejected, the customer will need a new withdrawal code.'
-                    : 'Keep the customer’s cash separate from your drawer until it’s approved.'}
-                </p>
-              </div>
-            )}
-          </div>
+              <p className="font-medium text-foreground">
+                {type === 'WITHDRAWAL'
+                  ? 'Don’t hand over any cash until it’s approved. If it’s rejected, the customer will need a new withdrawal code.'
+                  : 'Keep the customer’s cash separate from your drawer until it’s approved.'}
+              </p>
+            </div>
+          )}
         </div>
         <DescriptionList
-          className="rounded-lg border px-4"
+          className="rounded-2xl bg-muted/60 px-4"
           items={[
             executed && step.result.status === 'EXECUTED'
               ? {
@@ -313,13 +321,14 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
                   ),
                 }
               : { label: 'Request', value: <span className="font-mono text-[13px]">{shortId(step.result.cashOperationId)}</span> },
-            { label: 'Amount', value: <span className="tnum font-semibold">{formatPaise(step.intent.amountInPaise)}</span> },
-            { label: 'Account', value: `${ACCOUNT_TYPE_LABEL[account.accountType]} ${maskAccountNumber(account.accountNumber)}` },
+            { label: 'Account', value: <AccountLine account={account} /> },
             ...(step.result.status === 'EXECUTED' ? [{ label: 'Time', value: formatDateTime(step.result.transaction.createdAt) }] : []),
           ]}
         />
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Button onClick={startOver}>New {words.noun}</Button>
+        <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+          <Button size="lg" className="w-full sm:w-auto sm:min-w-48" onClick={startOver}>
+            New {words.noun}
+          </Button>
           {executed ? null : (
             <Button variant="link" asChild>
               <Link to="/teller/operations">Track it in My operations</Link>
@@ -332,17 +341,20 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
 
   if (step.kind === 'review') {
     return (
-      <section aria-labelledby={headingId} className="space-y-4">
-        <h3 id={headingId} ref={resultRef} tabIndex={-1} className="text-base font-semibold outline-none">
+      <section aria-labelledby={headingId} className="space-y-5">
+        <h3 id={headingId} ref={resultRef} tabIndex={-1} className="text-headline outline-none">
           Check the details with the customer
         </h3>
         {problem ? <ProblemCallout problem={problem} /> : null}
+        <div className="rounded-2xl bg-muted/60 px-5 py-7 text-center">
+          <p className="text-[13px] font-medium text-muted-foreground">Cash {words.noun}</p>
+          <p className="mt-1 text-[40px] font-semibold leading-[44px] tracking-[-0.04em] tnum sm:text-[48px] sm:leading-[52px]">
+            {formatPaise(step.intent.amountInPaise)}
+          </p>
+        </div>
         <DescriptionList
-          className="rounded-lg border px-4"
           items={[
-            { label: 'Transaction', value: `Cash ${words.noun}` },
             { label: 'Account', value: <AccountLine account={account} /> },
-            { label: 'Amount', value: <span className="text-lg font-semibold tnum">{formatPaise(step.intent.amountInPaise)}</span> },
             ...(step.intent.description ? [{ label: 'Note', value: step.intent.description }] : []),
             ...(step.intent.authorizationCode
               ? [{ label: 'Withdrawal code', value: `Entered, ending ${step.intent.authorizationCode.slice(-2)}` }]
@@ -350,11 +362,12 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
           ]}
         />
         {type === 'WITHDRAWAL' ? (
-          <p className="text-[13px] text-muted-foreground">Hand over cash only after you see the confirmation.</p>
+          <p className="text-[13px] leading-[18px] text-muted-foreground">Hand over cash only after you see the confirmation.</p>
         ) : null}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button
-            variant="outline"
+            variant="secondary"
+            size="lg"
             disabled={submitting}
             onClick={() => {
               setProblem(null);
@@ -363,7 +376,7 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
           >
             <ArrowLeft aria-hidden="true" /> Edit
           </Button>
-          <Button onClick={submit} loading={submitting}>
+          <Button size="lg" className="sm:min-w-48" onClick={submit} loading={submitting}>
             Confirm {words.noun}
           </Button>
         </div>
@@ -386,17 +399,17 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
         </Callout>
       ) : null}
       {blocked ? null : (
-        <form onSubmit={onReview} noValidate className="space-y-4">
+        <form onSubmit={onReview} noValidate className="space-y-5">
           {problem ? <ProblemCallout problem={problem} /> : null}
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
             <Field label="Amount" error={errors.amount?.message}>
-              {(p) => <MoneyInput {...p} {...detailsForm.register('amount')} autoFocus />}
+              {(p) => <LargeMoneyInput {...p} {...detailsForm.register('amount')} autoFocus />}
             </Field>
             {type === 'WITHDRAWAL' ? (
               <Field
                 label="Customer’s withdrawal code"
                 error={errors.code?.message}
-                hint="The customer creates this 8-digit code in their app for this account and this exact amount. Codes expire after a few minutes."
+                hint="The 8-digit code the customer made in their app for this account and this exact amount. Codes expire after a few minutes."
               >
                 {(p) => (
                   <Input
@@ -407,19 +420,31 @@ function CashFlow({ type, onBusyChange }: { type: CashOperationType; onBusyChang
                     spellCheck={false}
                     maxLength={12}
                     placeholder="•••• ••••"
-                    className="font-mono tracking-widest tnum"
+                    className="h-14 text-[22px] font-semibold tracking-[0.18em] tnum placeholder:font-normal sm:text-[22px]"
                   />
                 )}
               </Field>
-            ) : null}
+            ) : (
+              <NoteField register={detailsForm.register('note')} error={errors.note?.message} />
+            )}
           </div>
-          <Field label="Note" optional error={errors.note?.message} hint="Shown on the customer’s statement.">
-            {(p) => <Input {...p} {...detailsForm.register('note')} maxLength={255} autoComplete="off" />}
-          </Field>
-          <Button type="submit">Review {words.noun}</Button>
+          {type === 'WITHDRAWAL' ? <NoteField register={detailsForm.register('note')} error={errors.note?.message} /> : null}
+          <div className="flex justify-end">
+            <Button type="submit" size="lg" className="w-full sm:w-auto sm:min-w-48">
+              Review {words.noun}
+            </Button>
+          </div>
         </form>
       )}
     </div>
+  );
+}
+
+function NoteField({ register, error }: { register: UseFormRegisterReturn<'note'>; error?: string }) {
+  return (
+    <Field label="Note" optional error={error} hint="Shown on the customer’s statement.">
+      {(p) => <Input {...p} {...register} maxLength={255} autoComplete="off" />}
+    </Field>
   );
 }
 
@@ -433,43 +458,59 @@ function useHolderName(customerId: string) {
   });
 }
 
-function HolderName({ customerId }: { customerId: string }) {
+function HolderName({ customerId, className }: { customerId: string; className?: string }) {
   const holder = useHolderName(customerId);
-  if (holder.isPending) return <Skeleton className="h-5 w-32" />;
+  if (holder.isPending) return <Skeleton className="inline-block h-5 w-32 align-middle" />;
   if (holder.isError || !holder.data) return <span className="text-muted-foreground">Name unavailable</span>;
-  return <span className="font-medium">{holder.data.fullName}</span>;
+  return <span className={className ?? 'font-medium'}>{holder.data.fullName}</span>;
+}
+
+/** The holder's monogram once their name is known (the same cached read as the name) */
+function HolderAvatar({ customerId }: { customerId: string }) {
+  const holder = useHolderName(customerId);
+  if (holder.isPending) return <Skeleton className="size-11 shrink-0 rounded-full" />;
+  if (!holder.data) {
+    return (
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground" aria-hidden="true">
+        <UserRound className="size-5" strokeWidth={1.8} />
+      </span>
+    );
+  }
+  return <Avatar name={holder.data.fullName} className="size-11 text-[15px]" />;
 }
 
 function AccountLine({ account }: { account: AccountLookup }) {
   return (
-    <span className="inline-flex flex-wrap items-center gap-x-2">
-      <span className="tnum">
-        {ACCOUNT_TYPE_LABEL[account.accountType]} {maskAccountNumber(account.accountNumber)}
-      </span>
+    <span className="inline-flex flex-wrap items-baseline justify-end gap-x-1.5">
+      <HolderName customerId={account.customerId} />
       <span aria-hidden="true" className="text-muted-foreground">
         ·
       </span>
-      <HolderName customerId={account.customerId} />
+      <span className="tnum text-muted-foreground">
+        {ACCOUNT_TYPE_LABEL[account.accountType]} {maskAccountNumber(account.accountNumber)}
+      </span>
     </span>
   );
 }
 
+/** Who the teller is serving: confirmed before any amount is entered */
 function AccountSummary({ account, onChange }: { account: AccountLookup; onChange: () => void }) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Customer account" role="group">
-      <div className="min-w-0 space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <HolderName customerId={account.customerId} />
-          <StatusBadge status={account.status} />
-        </div>
-        <div className="flex flex-wrap items-center gap-x-2 text-[13px] text-muted-foreground">
-          <p>{ACCOUNT_TYPE_LABEL[account.accountType]} account</p>
-          <span aria-hidden="true">·</span>
-          <p className="font-mono tnum text-foreground">{maskAccountNumber(account.accountNumber)}</p>
-        </div>
+    <div className="relative flex items-center gap-3.5 rounded-2xl bg-muted/60 p-4" aria-label="Customer account" role="group">
+      <HolderAvatar customerId={account.customerId} />
+      <div className="min-w-0 flex-1">
+        {/* Phones: "Change" sits in the top corner, so only the name line needs to make room for it */}
+        <p className="truncate text-headline max-sm:pr-20">
+          <HolderName customerId={account.customerId} className="" />
+        </p>
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[14px] text-muted-foreground">
+          <span>{ACCOUNT_TYPE_LABEL[account.accountType]}</span>
+          <span className="whitespace-nowrap tnum text-foreground">{maskAccountNumber(account.accountNumber)}</span>
+          <StatusBadge status={account.status} className="ml-1" />
+        </p>
       </div>
-      <Button variant="outline" size="sm" onClick={onChange} className="self-start sm:self-center">
-        Change account
+      <Button variant="secondary" size="sm" onClick={onChange} className="shrink-0 max-sm:absolute max-sm:right-3 max-sm:top-3">
+        Change
       </Button>
     </div>
   );

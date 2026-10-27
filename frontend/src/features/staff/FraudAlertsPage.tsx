@@ -9,8 +9,9 @@ import { DataTable, Pagination } from '@/components/ui/data';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { SecondAnalystBadge, SeverityBadge } from './components/badges';
 import { LoadingAnnouncement } from './components/LoadingAnnouncement';
-import { formatDateTime, splitReason } from './components/format';
+import { describeAlertReason, formatDateTime, formatListTime, type DescribedAlert } from './components/format';
 import { useListParams } from './components/hooks';
+import { DirectionGlyph, chevronColumn, rowListClass } from './components/layout';
 
 const LIMIT = 20;
 
@@ -30,6 +31,12 @@ function ReviewState({ alert, me }: { alert: FraudAlert; me: string }) {
   );
 }
 
+/** What the row's button is called: the headline and the specifics, in the words on screen */
+const summaryOf = (described: DescribedAlert) => {
+  const details = described.reasons.map((r) => r.detail).filter(Boolean);
+  return details.length ? `${described.headline}, ${details.join('; ')}` : described.headline;
+};
+
 export interface AlertRouteState {
   alert: FraudAlert;
   from: string;
@@ -44,6 +51,7 @@ export default function FraudAlertsPage() {
   const { params, update, offset } = useListParams();
   const tab = TABS.find((t) => t.value === params.get('status')) ?? TABS[0]!;
   const triages = user.role === 'FRAUD_ANALYST';
+  const now = Date.now();
 
   const query = useQuery({
     queryKey: qk.alerts(tab.status, offset),
@@ -53,35 +61,33 @@ export default function FraudAlertsPage() {
   const rows = query.data;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
-        eyebrow="Risk"
         title="Fraud alerts"
-        description={
-          triages
-            ? 'Alerts raised by the risk rules, newest first. Closing a high or critical alert needs two analysts.'
-            : 'Alerts raised by the risk rules, newest first.'
-        }
+        description={triages ? 'Newest first. Closing a high or critical alert needs two analysts.' : 'Alerts raised by the risk rules, newest first.'}
       />
       {triages ? null : (
         <Callout tone="info" title="Read-only view">
           Only fraud analysts can triage alerts. You can see every alert and its history.
         </Callout>
       )}
-      <Card>
-        <Tabs value={tab.value} onValueChange={(value) => update({ status: value === 'open' ? undefined : value, offset: undefined })}>
-          <div className="p-5 pb-4 sm:p-6 sm:pb-4">
-            <TabsList aria-label="Alert status" className="h-auto flex-wrap justify-start">
-              {TABS.map((t) => (
-                <TabsTrigger key={t.value} value={t.value}>
-                  {t.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-          <TabsContent value={tab.value} className="mt-0 border-t">
+      <Tabs
+        value={tab.value}
+        onValueChange={(value) => update({ status: value === 'open' ? undefined : value, offset: undefined })}
+        className="space-y-4"
+      >
+        <TabsList aria-label="Alert status" className="w-full sm:w-auto">
+          {TABS.map((t) => (
+            <TabsTrigger key={t.value} value={t.value} className="flex-1 sm:flex-none">
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value={tab.value} className="mt-0">
+          <Card className="overflow-hidden">
             <LoadingAnnouncement active={query.isFetching} label="Loading alerts…" />
             <DataTable<FraudAlert>
+              className={rowListClass}
               caption={`${tab.label} fraud alerts`}
               rows={rows}
               loading={query.isPending}
@@ -94,62 +100,97 @@ export default function FraudAlertsPage() {
                   state: { alert, from: `${location.pathname}${location.search}`, fromLabel: 'Fraud alerts' } satisfies AlertRouteState,
                 })
               }
-              rowActionLabel={(a) => `Open alert: ${splitReason(a.reason).text}`}
+              rowActionLabel={(a) => `Open alert: ${summaryOf(describeAlertReason(a.reason))}`}
               columns={[
                 {
                   key: 'reason',
                   header: 'Alert',
-                  className: 'max-w-[22rem]',
                   cell: (a) => {
-                    const { direction, text } = splitReason(a.reason);
+                    const described = describeAlertReason(a.reason);
+                    const details = described.reasons.map((r) => r.detail).filter(Boolean);
                     return (
-                      <span className="flex flex-col items-start gap-1">
-                        <span className="line-clamp-2 break-words">{text}</span>
-                        {direction ? (
-                          <span className="text-[11.5px] font-normal text-muted-foreground">{direction}</span>
-                        ) : null}
-                        {/* Small screens have no Review column: the four-eyes state goes under the reason */}
-                        {a.closeRequestedBy ? (
-                          <span className="md:hidden">
-                            <ReviewState alert={a} me={user.id} />
+                      <span className="flex min-w-0 items-start gap-3.5 py-0.5">
+                        <DirectionGlyph direction={described.direction} className="mt-0.5 max-sm:hidden" />
+                        <span className="flex min-w-0 flex-col items-start gap-0.5">
+                          <span className="break-words text-[15px] font-medium leading-5 tracking-[-0.01em]">{described.headline}</span>
+                          {/* Phones: the specifics, then "Incoming · 2:44 am". Wide screens: "Incoming · specifics" */}
+                          <span className="flex flex-wrap gap-x-1 text-[13px] font-normal leading-[18px] text-muted-foreground">
+                            {details.length ? (
+                              <span className="line-clamp-2 w-full break-words md:order-2 md:w-auto md:flex-1 md:line-clamp-1">{details.join(' · ')}</span>
+                            ) : null}
+                            {described.direction ? (
+                              <span className="md:order-1">
+                                {described.direction}
+                                {details.length ? (
+                                  <span className="hidden md:inline" aria-hidden="true">
+                                    {' '}
+                                    ·
+                                  </span>
+                                ) : null}
+                              </span>
+                            ) : null}
+                            <span className="md:hidden">
+                              {described.direction ? '· ' : null}
+                              <time dateTime={a.createdAt}>{formatListTime(a.createdAt, now)}</time>
+                            </span>
                           </span>
-                        ) : null}
+                          {/* Small screens have no Review column: the four-eyes state goes under the reason */}
+                          {a.closeRequestedBy ? (
+                            <span className="mt-1 md:hidden">
+                              <ReviewState alert={a} me={user.id} />
+                            </span>
+                          ) : null}
+                        </span>
                       </span>
                     );
                   },
                 },
-                { key: 'severity', header: 'Severity', cell: (a) => <SeverityBadge severity={a.severity} /> },
-                { key: 'account', header: 'Account', hideOnMobile: true, cell: (a) => <Mono value={a.accountId} /> },
+                { key: 'severity', header: 'Severity', className: 'max-md:text-right', cell: (a) => <SeverityBadge severity={a.severity} /> },
+                {
+                  key: 'account',
+                  header: 'Account',
+                  hideOnMobile: true,
+                  cell: (a) => <Mono value={a.accountId} />,
+                },
                 {
                   key: 'initiatedBy',
                   header: 'Initiated by',
                   hideOnMobile: true,
-                  cell: (a) => (a.initiatedBy ? <Mono value={a.initiatedBy} /> : <span className="text-muted-foreground">Not recorded</span>),
+                  cell: (a) =>
+                    a.initiatedBy === user.id ? (
+                      <span className="text-[14px]">You</span>
+                    ) : a.initiatedBy ? (
+                      <Mono value={a.initiatedBy} />
+                    ) : (
+                      <span className="text-[14px] text-muted-foreground">Not recorded</span>
+                    ),
                 },
                 {
                   key: 'created',
                   header: 'Raised',
                   hideOnMobile: true,
+                  className: 'whitespace-nowrap',
                   cell: (a) => (
-                    <time dateTime={a.createdAt} className="whitespace-nowrap text-muted-foreground">
-                      {formatDateTime(a.createdAt)}
+                    <time dateTime={a.createdAt} title={formatDateTime(a.createdAt)} className="text-[14px] text-muted-foreground tnum">
+                      {formatListTime(a.createdAt, now)}
                     </time>
                   ),
                 },
                 {
                   key: 'review',
-                  header: 'Review',
+                  header: <span className="sr-only">Review</span>,
                   hideOnMobile: true,
                   cell: (a) => (a.closeRequestedBy ? <ReviewState alert={a} me={user.id} /> : null),
                 },
+                chevronColumn,
               ]}
             />
             {rows && (rows.length > 0 || offset > 0) ? (
               <Pagination offset={offset} limit={LIMIT} count={rows.length} onChange={(next) => update({ offset: next })} />
             ) : null}
-          </TabsContent>
-        </Tabs>
-      </Card>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

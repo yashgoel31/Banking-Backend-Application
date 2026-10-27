@@ -24,6 +24,8 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: false,
     cssCodeSplit: true,
+    // Recharts (~520 kB, 150 kB gzipped) is its own chunk and loads only with the pages that draw a chart
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks: {

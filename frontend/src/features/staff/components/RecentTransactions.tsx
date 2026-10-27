@@ -1,62 +1,69 @@
 import { useId, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, ReceiptText } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ReceiptText } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
-import type { LedgerEntry } from '@/lib/api/types';
+import { formatPaise } from '@/lib/money';
 import { cn } from '@/lib/cn';
-import { Amount, humanize } from '@/components/ui/primitives';
-import { DataTable } from '@/components/ui/data';
-import { formatDateTime } from './format';
+import { Amount, EmptyState, Skeleton, humanize } from '@/components/ui/primitives';
+import { ErrorState } from '@/components/ui/data';
+import { formatDateTime, formatListTime } from './format';
 
 const LIMIT = 10;
 
-function TransactionsTable({ accountId }: { accountId: string }) {
+function TransactionList({ accountId }: { accountId: string }) {
   const api = useApi();
   const query = useQuery({
     queryKey: qk.history(accountId, 0, LIMIT),
     queryFn: () => api.ledger.history(accountId, { limit: LIMIT, offset: 0 }),
   });
+  if (query.isError && !query.data?.length) return <ErrorState error={query.error} onRetry={() => void query.refetch()} className="py-6" />;
+  if (query.isPending) {
+    return (
+      <div className="space-y-4 py-2" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="flex items-center gap-3.5">
+            <Skeleton className="size-9 rounded-full" />
+            <div className="flex-1 space-y-1.5">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-28" />
+            </div>
+            <Skeleton className="h-4 w-20" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (query.data.length === 0) return <EmptyState icon={ReceiptText} title="No transactions yet" className="py-6" />;
+  const now = Date.now();
   return (
-    <DataTable<LedgerEntry>
-      caption="Last 10 transactions, newest first"
-      rows={query.data}
-      loading={query.isPending}
-      error={query.error}
-      onRetry={() => void query.refetch()}
-      getRowKey={(e) => e.entryId}
-      skeletonRows={3}
-      empty={{ icon: ReceiptText, title: 'No transactions yet' }}
-      columns={[
-        {
-          key: 'date',
-          header: 'Date',
-          cell: (e) => (
-            <time dateTime={e.createdAt} className="whitespace-nowrap text-muted-foreground">
-              {formatDateTime(e.createdAt)}
-            </time>
-          ),
-        },
-        {
-          key: 'description',
-          header: 'Details',
-          cell: (e) => (
-            <span className="flex min-w-0 flex-col">
-              <span className="break-words">{e.description || humanize(e.type)}</span>
-              <span className="font-mono text-[11.5px] text-muted-foreground">{e.referenceId}</span>
+    <ul aria-label="Last 10 transactions, newest first" className="divide-y divide-border/70">
+      {query.data.map((entry) => {
+        const Icon = entry.entryType === 'CREDIT' ? ArrowDownLeft : ArrowUpRight;
+        return (
+          <li key={entry.entryId} className="flex items-center gap-3.5 py-3">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-foreground/80" aria-hidden="true">
+              <Icon className="size-4" strokeWidth={1.8} />
             </span>
-          ),
-        },
-        { key: 'amount', header: 'Amount', align: 'right', cell: (e) => <Amount paise={e.amountInPaise} direction={e.entryType} /> },
-        {
-          key: 'after',
-          header: 'Balance after',
-          align: 'right',
-          hideOnMobile: true,
-          cell: (e) => <Amount paise={e.balanceAfterInPaise} className="font-normal text-muted-foreground" />,
-        },
-      ]}
-    />
+            <div className="min-w-0 flex-1">
+              <p className="break-words text-[15px] leading-5 tracking-[-0.01em]">{entry.description || humanize(entry.type)}</p>
+              <p className="truncate text-[13px] leading-[18px] text-muted-foreground tnum">
+                <time dateTime={entry.createdAt} title={formatDateTime(entry.createdAt)}>
+                  {formatListTime(entry.createdAt, now)}
+                </time>
+                <span className="hidden sm:inline"> · Ref {entry.referenceId}</span>
+              </p>
+            </div>
+            <div className="shrink-0 text-right">
+              <Amount paise={entry.amountInPaise} direction={entry.entryType} className="text-[15px]" />
+              <p className="text-[12.5px] leading-[18px] text-muted-foreground tnum">
+                Balance {formatPaise(entry.balanceAfterInPaise)}
+              </p>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -65,20 +72,20 @@ export function RecentTransactions({ accountId, last4 }: { accountId: string; la
   const [open, setOpen] = useState(false);
   const panelId = useId();
   return (
-    <div className="border-t pt-3">
+    <div>
       <button
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
         aria-label={`Recent transactions for account ending ${last4}`}
         onClick={() => setOpen((v) => !v)}
-        className="flex cursor-pointer items-center gap-1.5 rounded-md text-[13px] font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+        className="-mx-2 flex h-11 w-[calc(100%+1rem)] cursor-pointer items-center justify-between gap-2 rounded-xl px-2 text-[14px] font-medium text-primary transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring sm:h-9"
       >
-        <ChevronDown className={cn('size-4 transition-transform', open && 'rotate-180')} aria-hidden="true" />
         Recent transactions
+        <ChevronDown className={cn('size-4 transition-transform duration-200', open && 'rotate-180')} aria-hidden="true" />
       </button>
-      <div id={panelId} hidden={!open} className="-mx-4 mt-3 sm:-mx-5">
-        {open ? <TransactionsTable accountId={accountId} /> : null}
+      <div id={panelId} hidden={!open} className="mt-1">
+        {open ? <TransactionList accountId={accountId} /> : null}
       </div>
     </div>
   );

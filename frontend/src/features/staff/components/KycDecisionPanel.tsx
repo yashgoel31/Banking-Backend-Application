@@ -1,6 +1,5 @@
-import { useId, useState } from 'react';
+import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, ShieldX } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
 import { notifyError, notifySuccess } from '@/lib/notify';
@@ -11,6 +10,7 @@ import { ConfirmDialog } from '@/components/ui/overlays';
 import { formatDateTime } from './format';
 import { hasCode, isRefusal } from './hooks';
 import { OutcomeCallout, outcomeFromError, type Outcome } from './Outcome';
+import { Panel } from './layout';
 
 type Decision = { status: 'VERIFIED' | 'REJECTED'; version: number };
 
@@ -24,10 +24,9 @@ const GUIDANCE = {
  * KYC officers decide on the exact profile version on screen (compare-and-set): if the customer edits
  * anything first, the API refuses with PROFILE_CHANGED and the officer reviews the new details.
  */
-export function KycDecisionPanel({ profile, me }: { profile: CustomerProfile; me: string }) {
+export function KycDecisionPanel({ profile, me, className }: { profile: CustomerProfile; me: string; className?: string }) {
   const api = useApi();
   const queryClient = useQueryClient();
-  const headingId = useId();
   const [decision, setDecision] = useState<Decision | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const { userId, fullName } = profile;
@@ -75,10 +74,7 @@ export function KycDecisionPanel({ profile, me }: { profile: CustomerProfile; me
   const verifying = decision?.status === 'VERIFIED';
 
   return (
-    <section aria-labelledby={headingId} className="space-y-3 border-t px-5 py-4 sm:px-6">
-      <h3 id={headingId} className="text-sm font-semibold">
-        KYC decision
-      </h3>
+    <Panel title="KYC decision" className={className} bodyClassName="space-y-4">
       <OutcomeCallout outcome={outcome} onDismiss={() => setOutcome(null)} />
       {profile.userId === me ? (
         <Callout tone="info" title="This is your own profile">
@@ -86,23 +82,27 @@ export function KycDecisionPanel({ profile, me }: { profile: CustomerProfile; me
         </Callout>
       ) : (
         <>
-          <p className="text-[13px] text-muted-foreground">{GUIDANCE[profile.kycStatus]}</p>
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <p className="text-pretty text-[14px] leading-5 text-muted-foreground">{GUIDANCE[profile.kycStatus]}</p>
+          <div className="grid gap-2">
             {profile.kycStatus !== 'VERIFIED' ? (
-              <Button variant="success" onClick={() => setDecision({ status: 'VERIFIED', version: profile.version })}>
-                <ShieldCheck aria-hidden="true" /> Verify identity
+              <Button block className="h-11" onClick={() => setDecision({ status: 'VERIFIED', version: profile.version })}>
+                Verify identity
               </Button>
             ) : null}
             {profile.kycStatus !== 'REJECTED' ? (
               <Button
-                variant="outline"
-                className="text-destructive hover:text-destructive"
+                variant="secondary"
+                block
+                className="h-11 text-destructive"
                 onClick={() => setDecision({ status: 'REJECTED', version: profile.version })}
               >
-                <ShieldX aria-hidden="true" /> Reject KYC
+                Reject KYC
               </Button>
             ) : null}
           </div>
+          <p className="text-[13px] leading-[18px] text-muted-foreground">
+            Your decision applies to version {profile.version} of the profile. If the customer edits it first, nothing is decided.
+          </p>
         </>
       )}
       <ConfirmDialog
@@ -120,11 +120,11 @@ export function KycDecisionPanel({ profile, me }: { profile: CustomerProfile; me
         tone={verifying ? 'primary' : 'destructive'}
         onConfirm={decide}
       >
-        <p className="rounded-md border bg-muted/50 px-3 py-2 text-[13px] text-muted-foreground">
+        <p className="text-pretty text-[13px] leading-[18px] text-muted-foreground">
           You’re deciding on version {decision?.version ?? profile.version} of this profile, last changed {formatDateTime(profile.updatedAt)}.
           If the customer changes anything first, nothing is decided and you’ll see their new details.
         </p>
       </ConfirmDialog>
-    </section>
+    </Panel>
   );
 }

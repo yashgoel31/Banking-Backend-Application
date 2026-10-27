@@ -59,10 +59,11 @@ describe('PayeesPage', () => {
     payeesApi([landlord, plumber]);
     render();
     await screen.findByText('Ravi (landlord)');
-    const rows = within(screen.getByRole('table', { name: 'Your payees' })).getAllByRole('row').slice(1);
+    const rows = within(screen.getByRole('list', { name: 'Your payees' })).getAllByRole('listitem');
     expect(rows[0]).toHaveTextContent('••••5432');
-    expect(within(rows[0]!).getByText('Active')).toBeInTheDocument();
-    expect(rows[0]).toHaveTextContent(formatDate(landlord.createdAt));
+    // Ready to pay is the normal state: only a payee still cooling off is called out
+    expect(rows[0]).not.toHaveTextContent(/activates in/i);
+    expect(rows[0]).toHaveTextContent(`Added ${formatDate(landlord.createdAt)}`);
     expect(within(rows[0]!).getByRole('link', { name: 'Pay Ravi (landlord)' })).toHaveAttribute('href', '/transfer?payee=ben-1');
     expect(within(rows[1]!).getByText('Activates in 42 min')).toBeInTheDocument();
     expect(within(rows[1]!).getByRole('button', { name: 'Pay Plumber' })).toBeDisabled();

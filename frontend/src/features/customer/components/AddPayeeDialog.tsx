@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { forwardRef, useId, useState, type InputHTMLAttributes } from 'react';
 import { Link } from 'react-router';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -37,6 +37,7 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const { ensureFresh } = useStepUp();
   const queryClient = useQueryClient();
   const hasAuthenticator = Boolean(user?.mfa);
+  const instantId = useId();
   const [problem, setProblem] = useState<{ title: string; description: string } | null>(null);
   /** Instant approval was declined: the details wait for the customer to choose the normal route */
   const [declined, setDeclined] = useState<Values | null>(null);
@@ -143,7 +144,7 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 autoComplete="off"
                 spellCheck={false}
                 placeholder="1001 2345 6789"
-                className="font-mono tnum"
+                className="tracking-[0.06em] tnum"
               />
             )}
           </Field>
@@ -153,24 +154,22 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
           <div className="space-y-2">
             <label
+              htmlFor={instantId}
               className={cn(
-                'grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-0.5 rounded-lg border p-3.5',
-                hasAuthenticator ? 'cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary-soft/50' : 'opacity-70'
+                'flex items-center gap-4 rounded-2xl bg-muted/70 p-4 transition-colors',
+                hasAuthenticator ? 'cursor-pointer hover:bg-muted' : 'cursor-not-allowed opacity-60'
               )}
             >
-              <input
-                type="checkbox"
-                className="mt-0.5 size-4 cursor-pointer accent-primary disabled:cursor-not-allowed"
-                disabled={!hasAuthenticator}
-                {...form.register('instant')}
-              />
-              <span className="text-sm font-medium">Activate now with my authenticator</span>
-              <span className="col-start-2 text-[13px] text-muted-foreground">
-                Skip the {POLICY.payeeCoolingMinutes}-minute wait by confirming with a code from your authenticator app.
+              <span className="min-w-0 flex-1">
+                <span className="block text-[15px] font-medium tracking-[-0.01em]">Activate now with my authenticator</span>
+                <span className="mt-0.5 block text-[13px] leading-[18px] text-muted-foreground">
+                  Skip the {POLICY.payeeCoolingMinutes}-minute wait by confirming with a code from your authenticator app.
+                </span>
               </span>
+              <Switch id={instantId} disabled={!hasAuthenticator} {...form.register('instant')} />
             </label>
             {hasAuthenticator ? null : (
-              <p className="text-[13px] text-muted-foreground">
+              <p className="px-1 text-[13px] text-muted-foreground">
                 <Link to="/settings/security" className="font-medium text-primary hover:underline">
                   Turn on two-factor authentication
                 </Link>{' '}
@@ -179,7 +178,7 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             )}
           </div>
 
-          <p className="text-[13px] text-muted-foreground">
+          <p className="text-[13px] leading-[18px] text-muted-foreground">
             In a new payee’s first 24 hours you can send them up to {formatPaise(POLICY.newPayeeLimitPaise)} in total.
           </p>
 
@@ -189,7 +188,7 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 You can still add {declined.nickname} now. They’ll be ready to pay after the usual {POLICY.payeeCoolingMinutes}-minute
                 cooling-off period.
               </span>
-              <span className="mt-2 flex flex-wrap gap-2">
+              <span className="mt-3 flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => void add(declined, false)} loading={busy}>
                   Add with cooling-off period
                 </Button>
@@ -206,10 +205,10 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           ) : null}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => change(false)} disabled={busy}>
+            <Button variant="secondary" size="lg" onClick={() => change(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" loading={busy && !declined}>
+            <Button type="submit" size="lg" loading={busy && !declined}>
               Add payee
             </Button>
           </DialogFooter>
@@ -218,3 +217,24 @@ export function AddPayeeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     </Dialog>
   );
 }
+
+/** An iOS-style switch drawn around a real checkbox, so labels, keyboard and form libraries just work */
+const Switch = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>>(({ className, ...props }, ref) => (
+  <span className={cn('relative inline-flex h-[31px] w-[51px] shrink-0', className)}>
+    <input
+      ref={ref}
+      type="checkbox"
+      className="peer absolute inset-0 z-10 m-0 cursor-pointer appearance-none rounded-full opacity-0 disabled:cursor-not-allowed"
+      {...props}
+    />
+    <span
+      aria-hidden="true"
+      className="absolute inset-0 rounded-full bg-foreground/15 transition-colors duration-200 peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-popover"
+    />
+    <span
+      aria-hidden="true"
+      className="absolute left-[2px] top-[2px] size-[27px] rounded-full bg-white shadow-thumb transition-transform duration-200 ease-spring peer-checked:translate-x-5"
+    />
+  </span>
+));
+Switch.displayName = 'Switch';

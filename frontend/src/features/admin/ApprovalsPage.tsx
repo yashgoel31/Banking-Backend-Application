@@ -10,6 +10,7 @@ import { qk } from '@/lib/query';
 import { Button } from '@/components/ui/button';
 import { ErrorState, Pagination } from '@/components/ui/data';
 import { Card, EmptyState, PageHeader, Skeleton } from '@/components/ui/primitives';
+import { cn } from '@/lib/cn';
 import { ConfirmDialog, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { RequestCard, requestPermissions } from './components/RequestCard';
 import { RequestStaffDialog } from './components/RequestStaffDialog';
@@ -48,37 +49,30 @@ export default function ApprovalsPage() {
   const [requestOpen, setRequestOpen] = useState(false);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
         title="Approvals"
-        description="Every change to who can work at the bank needs two administrators. Review your colleagues’ requests; nobody can approve their own request or one about their own account."
+        description="Changes to who can work at the bank need two administrators. Nobody can approve their own request, or one about their own account."
         actions={
-          <Button onClick={() => setRequestOpen(true)}>
+          <Button variant="secondary" onClick={() => setRequestOpen(true)}>
             <UserPlus aria-hidden="true" /> Request new staff member
           </Button>
         }
       />
-      <Card>
-        <Tabs
-          value={tab.value}
-          onValueChange={(value) => setParams(value === 'pending' ? {} : { status: value }, { replace: true })}
-        >
-          <div className="border-b px-4 py-3 sm:px-6">
-            <TabsList aria-label="Request status">
-              {TABS.map((t) => (
-                <TabsTrigger key={t.value} value={t.value}>
-                  {t.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
+      <Tabs value={tab.value} onValueChange={(value) => setParams(value === 'pending' ? {} : { status: value }, { replace: true })}>
+        <TabsList aria-label="Request status">
           {TABS.map((t) => (
-            <TabsContent key={t.value} value={t.value} className="mt-0">
-              {t.value === tab.value ? <RequestList status={t.status} empty={t.empty} /> : null}
-            </TabsContent>
+            <TabsTrigger key={t.value} value={t.value}>
+              {t.label}
+            </TabsTrigger>
           ))}
-        </Tabs>
-      </Card>
+        </TabsList>
+        {TABS.map((t) => (
+          <TabsContent key={t.value} value={t.value} className="mt-4 lg:mt-5">
+            {t.value === tab.value ? <RequestList status={t.status} empty={t.empty} /> : null}
+          </TabsContent>
+        ))}
+      </Tabs>
       <RequestStaffDialog open={requestOpen} onOpenChange={setRequestOpen} />
     </div>
   );
@@ -150,24 +144,40 @@ function RequestList({ status, empty }: { status: AdminRequestStatus; empty: { t
   let content;
   if (query.isPending) {
     content = (
-      <div className="space-y-3 p-4 sm:p-6">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <p role="status" className="sr-only">
           Loading requests
         </p>
-        {Array.from({ length: 3 }, (_, i) => (
-          <Skeleton key={i} className="h-36 w-full rounded-lg" />
+        {Array.from({ length: 2 }, (_, i) => (
+          <Card key={i} className="space-y-3 p-5 sm:p-6">
+            <Skeleton className="h-5 w-44" />
+            <Skeleton className="h-4 w-64 max-w-full" />
+            <Skeleton className="mt-5 h-4 w-full" />
+            <Skeleton className="h-4 w-2/3" />
+          </Card>
         ))}
       </div>
     );
   } else if (query.isError && !rows) {
-    content = <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
+    content = (
+      <Card>
+        <ErrorState error={query.error} onRetry={() => void query.refetch()} />
+      </Card>
+    );
   } else if (rows && rows.length === 0 && offset === 0) {
-    content = <EmptyState icon={status === 'PENDING' ? Inbox : Stamp} title={empty.title} description={empty.description} />;
+    content = (
+      <Card>
+        <EmptyState icon={status === 'PENDING' ? Inbox : Stamp} title={empty.title} description={empty.description} />
+      </Card>
+    );
   } else {
     content = (
       <>
         {rows && rows.length > 0 ? (
-          <ul className={query.isPlaceholderData ? 'space-y-3 p-3 opacity-60 sm:p-6' : 'space-y-3 p-3 sm:p-6'} aria-busy={query.isPlaceholderData}>
+          <ul
+            className={cn('grid gap-4 transition-opacity xl:grid-cols-2', query.isPlaceholderData && 'opacity-60')}
+            aria-busy={query.isPlaceholderData}
+          >
             {rows.map((request) => (
               <li key={request.id}>
                 <RequestCard
@@ -182,9 +192,14 @@ function RequestList({ status, empty }: { status: AdminRequestStatus; empty: { t
             ))}
           </ul>
         ) : (
-          <p className="px-6 py-10 text-center text-[13px] text-muted-foreground">No more requests on this page.</p>
+          <Card>
+            <p className="px-6 py-10 text-center text-[14px] text-muted-foreground">No more requests on this page.</p>
+          </Card>
         )}
-        <Pagination offset={offset} limit={PAGE_SIZE} count={rows?.length ?? 0} onChange={setOffset} />
+        {/* One page is the usual case: the pager appears only when there is somewhere to go */}
+        {offset > 0 || (rows?.length ?? 0) >= PAGE_SIZE ? (
+          <Pagination offset={offset} limit={PAGE_SIZE} count={rows?.length ?? 0} onChange={setOffset} className="mt-4 border-0 px-0 sm:px-0" />
+        ) : null}
       </>
     );
   }

@@ -1,33 +1,33 @@
 import { useId } from 'react';
 import { cn } from '@/lib/cn';
 
-/** BankSphere mark: a sphere cut by a ledger line */
+const FRONT_ARC = 'M3 16 A13 4.6 0 0 0 29 16';
+const BACK_ARC = 'M3 16 A13 4.6 0 0 1 29 16';
+
+/** BankSphere mark: a sphere inside an orbit. Drawn in currentColor, so it follows the theme. */
 export function BrandMark({ className }: { className?: string }) {
-  // Unique per instance: a gradient referenced by id from a hidden copy (e.g. the desktop sidebar) doesn't paint
-  const gradientId = `bs-mark-${useId().replace(/:/g, '')}`;
+  // Unique per instance: a mask referenced by id from a hidden copy doesn't paint
+  const maskId = `bs-mark-${useId().replace(/:/g, '')}`;
   return (
-    <svg viewBox="0 0 32 32" className={cn('size-8', className)} aria-hidden="true">
+    <svg viewBox="0 0 32 32" fill="none" className={cn('size-7', className)} aria-hidden="true">
       <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#4F7DFF" />
-          <stop offset="1" stopColor="#1E40D8" />
-        </linearGradient>
+        <mask id={maskId} maskUnits="userSpaceOnUse">
+          <rect width="32" height="32" fill="white" />
+          <path d={FRONT_ARC} transform="rotate(-22 16 16)" stroke="black" strokeWidth="5" strokeLinecap="round" />
+        </mask>
       </defs>
-      <rect width="32" height="32" rx="9" fill={`url(#${gradientId})`} />
-      <circle cx="16" cy="16" r="8.5" fill="none" stroke="#fff" strokeWidth="2.2" />
-      <path d="M7.5 16h17" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
-      <path d="M16 7.5c2.6 2.3 3.9 5.1 3.9 8.5s-1.3 6.2-3.9 8.5" fill="none" stroke="#fff" strokeOpacity=".55" strokeWidth="1.6" />
+      <path d={BACK_ARC} transform="rotate(-22 16 16)" stroke="currentColor" strokeOpacity="0.4" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="16" cy="16" r="8.25" fill="currentColor" mask={`url(#${maskId})`} />
+      <path d={FRONT_ARC} transform="rotate(-22 16 16)" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
 
 export function BrandLogo({ className, inverted }: { className?: string; inverted?: boolean }) {
   return (
-    <span className={cn('inline-flex items-center gap-2.5', className)}>
+    <span className={cn('inline-flex items-center gap-2', inverted ? 'text-white' : 'text-foreground', className)}>
       <BrandMark />
-      <span className={cn('text-[17px] font-semibold tracking-tight', inverted ? 'text-white' : 'text-foreground')}>
-        Bank<span className={inverted ? 'text-[#8EA8FF]' : 'text-primary'}>Sphere</span>
-      </span>
+      <span className="text-[17px] font-semibold tracking-[-0.022em]">BankSphere</span>
     </span>
   );
 }

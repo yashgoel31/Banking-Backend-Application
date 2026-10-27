@@ -25,7 +25,7 @@ export function useCashAccount(accountId: string) {
 
 export function AccountCell({ accountId }: { accountId: string }) {
   const account = useCashAccount(accountId);
-  if (account.data) return <span className="font-mono tnum">{maskAccountNumber(account.data.accountNumber)}</span>;
+  if (account.data) return <span className="whitespace-nowrap tnum">{maskAccountNumber(account.data.accountNumber)}</span>;
   return <Mono value={accountId} />;
 }
 
@@ -182,10 +182,10 @@ export function CashDecisionDialog({
         </Callout>
       ) : null}
       {op?.description ? (
-        <p className="rounded-md border bg-muted/30 px-3 py-2 text-[13px]">
-          <span className="text-muted-foreground">Teller’s note: </span>
-          {op.description}
-        </p>
+        <div className="rounded-xl bg-muted/60 px-4 py-3 text-[14px] leading-5">
+          <p className="text-[12.5px] font-medium text-muted-foreground">Teller’s note</p>
+          <p className="mt-0.5">{op.description}</p>
+        </div>
       ) : null}
     </ConfirmDialog>
   );

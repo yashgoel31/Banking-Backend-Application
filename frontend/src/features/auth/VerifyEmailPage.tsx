@@ -36,7 +36,7 @@ export default function VerifyEmailPage() {
     return (
       <div className="flex flex-col items-center gap-3 py-10 text-center">
         <Spinner label="Verifying your email" />
-        <p className="text-sm text-muted-foreground">Verifying your email…</p>
+        <p className="text-[15px] text-muted-foreground">Verifying your email…</p>
       </div>
     );
   }
@@ -92,7 +92,7 @@ function ResendVerification({ failedTemporarily }: { failedTemporarily: boolean 
           </Button>
         </form>
       )}
-      <p className="mt-6 text-center text-sm">
+      <p className="mt-8 text-center text-[14px]">
         <Link to="/login" className="font-medium text-primary hover:underline">
           Back to sign in
         </Link>

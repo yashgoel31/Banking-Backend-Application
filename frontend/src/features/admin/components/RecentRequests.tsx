@@ -1,20 +1,19 @@
-import { useId } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { Stamp } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { qk } from '@/lib/query';
 import { ErrorState } from '@/components/ui/data';
-import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, EmptyState, Skeleton, StatusBadge } from '@/components/ui/primitives';
+import { Badge, EmptyState, Skeleton, StatusBadge } from '@/components/ui/primitives';
 import { RelativeTime, RequestSubject } from './People';
 import { isExpired, requestTargetId, requestTitle } from './requests';
+import { Panel } from './Panel';
 import { useUserLookup } from './useUserLookup';
 
 const RECENT = 5;
 
-export function RecentRequests({ now }: { now: number }) {
+export function RecentRequests({ now, className }: { now: number; className?: string }) {
   const api = useApi();
-  const headingId = useId();
   const query = useQuery({
     // Same family as the Approvals lists, so deciding a request refreshes this too
     queryKey: [...qk.adminRequests(undefined, 0), { limit: RECENT }],
@@ -26,10 +25,13 @@ export function RecentRequests({ now }: { now: number }) {
   let body;
   if (query.isPending) {
     body = (
-      <div className="space-y-3">
+      <div className="space-y-4 py-1">
         <span className="sr-only">Loading</span>
         {Array.from({ length: 3 }, (_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
+          <div key={i} className="space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-3 w-52 max-w-full" />
+          </div>
         ))}
       </div>
     );
@@ -46,15 +48,17 @@ export function RecentRequests({ now }: { now: number }) {
     );
   } else {
     body = (
-      <ul className="divide-y">
+      <ul className="divide-y divide-border/70">
         {rows.map((request) => (
-          <li key={request.id} className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
-            <div className="min-w-0 space-y-1">
-              <p className="text-sm font-medium">{requestTitle(request)}</p>
-              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
-                <RequestSubject request={request} resolve={resolve} />
+          <li key={request.id} className="flex items-start gap-3 py-3 first:pt-1 last:pb-1">
+            <div className="min-w-0 flex-1">
+              <p className="text-[15px] font-medium leading-5 tracking-[-0.01em]">{requestTitle(request)}</p>
+              <p className="mt-0.5 flex min-w-0 items-baseline gap-x-1.5 text-[13px] leading-[18px] text-muted-foreground">
+                <span className="min-w-0 truncate">
+                  <RequestSubject request={request} resolve={resolve} withRole={false} />
+                </span>
                 <span aria-hidden="true">·</span>
-                <RelativeTime iso={request.createdAt} now={now} />
+                <RelativeTime iso={request.createdAt} now={now} past className="shrink-0 whitespace-nowrap" />
               </p>
             </div>
             {isExpired(request, now) ? (
@@ -71,19 +75,16 @@ export function RecentRequests({ now }: { now: number }) {
   }
 
   return (
-    <section aria-labelledby={headingId}>
-      <Card>
-        <CardHeader className="flex-row items-start justify-between gap-3">
-          <div className="space-y-1">
-            <CardTitle id={headingId}>Recent administrative requests</CardTitle>
-            <CardDescription>The latest {RECENT}, whatever their status.</CardDescription>
-          </div>
-          <Link to="/approvals" className="shrink-0 text-[13px] font-medium text-primary underline-offset-2 hover:underline">
-            View all requests
-          </Link>
-        </CardHeader>
-        <CardContent>{body}</CardContent>
-      </Card>
-    </section>
+    <Panel
+      title="Recent requests"
+      action={
+        <Link to="/approvals" aria-label="View all requests" className="text-[14px] font-medium text-primary hover:underline">
+          View all
+        </Link>
+      }
+      className={className}
+    >
+      {body}
+    </Panel>
   );
 }

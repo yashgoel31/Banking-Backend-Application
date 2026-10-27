@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
-import { UserPlus } from 'lucide-react';
+import { Check, CheckCircle2, CircleAlert } from 'lucide-react';
 import { useApi } from '@/lib/auth/AuthProvider';
 import { describeError, isApiError, type ErrorDescription } from '@/lib/api/errors';
 import { qk } from '@/lib/query';
@@ -38,13 +38,8 @@ export function RequestStaffDialog({ open, onOpenChange }: { open: boolean; onOp
     <Dialog open={open} onOpenChange={close}>
       <DialogContent size="lg">
         <DialogHeader
-          icon={
-            <span className="flex size-9 items-center justify-center rounded-lg bg-primary-soft text-primary">
-              <UserPlus className="size-4" aria-hidden="true" />
-            </span>
-          }
           title="Request a new staff member"
-          description="A second administrator must approve this before the account is created."
+          description="A second administrator approves it. They then set their own password and authenticator from an activation email."
         />
         {sent ? (
           <Sent email={sent} onAnother={() => setSent(null)} onDone={() => close(false)} />
@@ -59,12 +54,16 @@ export function RequestStaffDialog({ open, onOpenChange }: { open: boolean; onOp
 function Sent({ email, onAnother, onDone }: { email: string; onAnother: () => void; onDone: () => void }) {
   return (
     <>
-      <Callout tone="success" title="Sent for approval">
-        A second administrator must approve this request. Once approved, <strong>{email}</strong> receives an activation
-        email to set their own password and authenticator. Administrators never see staff passwords.
-      </Callout>
+      <div role="status" className="rounded-2xl bg-muted/60 px-5 py-6 text-center">
+        <CheckCircle2 className="mx-auto size-9 text-success" strokeWidth={1.6} aria-hidden="true" />
+        <p className="mt-3 text-headline">Sent for approval</p>
+        <p className="mx-auto mt-1.5 max-w-md text-pretty text-[14px] leading-5 text-muted-foreground">
+          A second administrator must approve this request. Once approved, <span className="font-medium text-foreground">{email}</span> receives an
+          activation email to set their own password and authenticator. Administrators never see staff passwords.
+        </p>
+      </div>
       <DialogFooter>
-        <Button variant="outline" onClick={onAnother}>
+        <Button variant="secondary" onClick={onAnother}>
           Request another
         </Button>
         <Button onClick={onDone} autoFocus>
@@ -131,7 +130,7 @@ function StaffForm({ onSent, onCancel }: { onSent: (email: string) => void; onCa
       <Field
         label="Corporate email"
         error={errors.email?.message}
-        hint="Their address on the bank’s email domain. The activation link is sent here."
+        hint="Their address on the bank’s email domain. The activation email goes here."
       >
         {(p) => (
           <Input {...p} {...form.register('email')} type="email" inputMode="email" autoComplete="off" spellCheck={false} autoFocus />
@@ -140,51 +139,56 @@ function StaffForm({ onSent, onCancel }: { onSent: (email: string) => void; onCa
 
       <fieldset aria-describedby={errors.role ? roleErrorId : undefined}>
         <legend className="text-[13px] font-medium text-foreground">Role</legend>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {STAFF_ROLES.map((role) => {
             const info = ROLE_INFO[role];
             return (
               <label
                 key={role}
                 className={cn(
-                  'flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3 transition-colors hover:bg-muted/50',
-                  'focus-within:ring-2 focus-within:ring-ring has-[:checked]:border-primary has-[:checked]:bg-primary-soft',
+                  'flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-background p-4 transition-[border-color,background-color] duration-150 hover:border-foreground/20',
+                  'has-[:checked]:border-primary has-[:checked]:bg-primary-soft/50 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-popover',
                   role === 'BANK_ADMIN' && 'sm:col-span-2'
                 )}
               >
-                <input
-                  type="radio"
-                  value={role}
-                  {...form.register('role')}
-                  aria-labelledby={`${id}-${role}-label`}
-                  aria-describedby={`${id}-${role}-description`}
-                  className="mt-0.5 size-4 shrink-0 cursor-pointer accent-[hsl(var(--primary))]"
-                />
-                <span className="min-w-0 space-y-0.5">
-                  <span id={`${id}-${role}-label`} className="block text-sm font-medium">
+                <span className="min-w-0 flex-1 space-y-0.5">
+                  <span id={`${id}-${role}-label`} className="block text-[15px] font-medium leading-5 tracking-[-0.01em]">
                     {info.label}
                   </span>
-                  <span id={`${id}-${role}-description`} className="block text-[12.5px] leading-snug text-muted-foreground">
+                  <span id={`${id}-${role}-description`} className="block text-[13px] leading-[18px] text-muted-foreground">
                     {info.description}
                   </span>
+                </span>
+                {/* A real radio, drawn as a check circle: it stays clickable and keyboard-operable */}
+                <span className="relative mt-px size-[22px] shrink-0">
+                  <input
+                    type="radio"
+                    value={role}
+                    {...form.register('role')}
+                    aria-labelledby={`${id}-${role}-label`}
+                    aria-describedby={`${id}-${role}-description`}
+                    className="peer absolute inset-0 size-[22px] cursor-pointer appearance-none rounded-full border-[1.5px] border-input bg-background transition-colors checked:border-primary checked:bg-primary focus-visible:outline-none focus-visible:ring-0"
+                  />
+                  <Check
+                    className="pointer-events-none absolute inset-0 m-auto size-3.5 text-primary-foreground opacity-0 transition-opacity peer-checked:opacity-100"
+                    strokeWidth={3}
+                    aria-hidden="true"
+                  />
                 </span>
               </label>
             );
           })}
         </div>
         {errors.role ? (
-          <p id={roleErrorId} role="alert" className="mt-1.5 text-[13px] font-medium text-destructive">
+          <p id={roleErrorId} role="alert" className="mt-2 flex items-start gap-1.5 text-[13px] font-medium leading-[18px] text-destructive">
+            <CircleAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
             {errors.role.message}
           </p>
         ) : null}
       </fieldset>
 
-      <p className="text-[13px] text-muted-foreground">
-        Nobody chooses a password for them: once approved, they activate their own account from the email.
-      </p>
-
       <DialogFooter>
-        <Button variant="outline" onClick={onCancel} disabled={isSubmitting}>
+        <Button variant="secondary" onClick={onCancel} disabled={isSubmitting}>
           Cancel
         </Button>
         <Button type="submit" loading={isSubmitting}>

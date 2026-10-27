@@ -2,25 +2,21 @@ import type { AdminRequest } from '@/lib/api/types';
 import type { Role } from '@/lib/auth/session';
 import { Badge, Skeleton } from '@/components/ui/primitives';
 import { cn } from '@/lib/cn';
-import { formatDateTime, relativeTime } from './format';
+import { formatDateTime, relativeTime, timeAgo } from './format';
 import { requestTargetId } from './requests';
 import { roleLabel } from './roles';
 import type { PersonResolution, ResolvePerson } from './useUserLookup';
 
+/** A role is a category, not a status: grey, whatever the role (blue is for links and selection) */
 export function RoleBadge({ role, className }: { role: Role; className?: string }) {
-  const tone = role === 'CUSTOMER' ? 'neutral' : role === 'BANK_ADMIN' ? 'primary' : 'info';
-  return (
-    <Badge tone={tone} className={className}>
-      {roleLabel(role)}
-    </Badge>
-  );
+  return <Badge className={className}>{roleLabel(role)}</Badge>;
 }
 
-/** "2 hours ago", with the exact time on hover and in the markup */
-export function RelativeTime({ iso, now, className }: { iso: string; now?: number; className?: string }) {
+/** "2 hours ago" / "in 22 hours", with the exact time on hover and in the markup. `past` marks an event that has happened. */
+export function RelativeTime({ iso, now, past, className }: { iso: string; now?: number; past?: boolean; className?: string }) {
   return (
     <time dateTime={iso} title={formatDateTime(iso)} className={cn('tnum', className)}>
-      {relativeTime(iso, now)}
+      {past ? timeAgo(iso, now) : relativeTime(iso, now)}
     </time>
   );
 }
@@ -39,7 +35,7 @@ export function PersonName({ person, me = 'You' }: { person: PersonResolution | 
         </>
       );
     case 'user':
-      return <span className="break-all">{person.user.email}</span>;
+      return <span className="[overflow-wrap:anywhere]">{person.user.email}</span>;
     case 'unknown':
       return (
         <span className="font-mono text-[12.5px] text-muted-foreground" title={person.id}>
@@ -49,23 +45,37 @@ export function PersonName({ person, me = 'You' }: { person: PersonResolution | 
   }
 }
 
-/** Who a request is about: the new colleague's email and role, or the existing user it changes */
-export function RequestSubject({ request, resolve }: { request: AdminRequest; resolve: ResolvePerson }) {
+/**
+ * Who a request is about: the new colleague's email and role, or the existing user it changes. The role is
+ * plain text after the address (`withRole={false}` leaves it out where space is short).
+ */
+export function RequestSubject({ request, resolve, withRole = true }: { request: AdminRequest; resolve: ResolvePerson; withRole?: boolean }) {
   if (request.type === 'CREATE_STAFF') {
     return (
       <>
-        <span className="break-all font-medium">{request.payload.email}</span>
-        {request.payload.role ? <RoleBadge role={request.payload.role} /> : null}
+        <span className="min-w-0 [overflow-wrap:anywhere]">{request.payload.email}</span>
+        {withRole && request.payload.role ? <RoleText role={request.payload.role} /> : null}
       </>
     );
   }
   const person = resolve(requestTargetId(request));
   return (
     <>
-      <span className="font-medium">
+      <span className="min-w-0">
         <PersonName person={person} me="Your account" />
       </span>
-      {person?.kind === 'user' ? <RoleBadge role={person.user.role} /> : null}
+      {withRole && person?.kind === 'user' ? <RoleText role={person.user.role} /> : null}
+    </>
+  );
+}
+
+function RoleText({ role }: { role: Role }) {
+  return (
+    <>
+      <span aria-hidden="true" className="text-muted-foreground">
+        ·
+      </span>
+      <span className="text-muted-foreground">{roleLabel(role)}</span>
     </>
   );
 }
