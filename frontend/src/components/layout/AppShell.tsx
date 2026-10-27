@@ -147,15 +147,18 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   return (
-    <div className="min-h-dvh bg-canvas">
+    <div className="min-h-dvh bg-canvas lg:flex">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:shadow-elevated"
       >
         Skip to content
       </a>
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-[248px] lg:block" aria-label="Sidebar">
-        <SidebarFrame />
+      {/* A full-height column whose contents stick to the viewport while the page scrolls */}
+      <aside className="z-40 hidden w-[248px] shrink-0 bg-sidebar lg:block" aria-label="Sidebar">
+        <div className="sticky top-0 h-dvh">
+          <SidebarFrame />
+        </div>
       </aside>
 
       <DialogPrimitive.Root open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -164,7 +167,7 @@ export function AppShell() {
         </SheetContent>
       </DialogPrimitive.Root>
 
-      <div className="lg:pl-[248px]">
+      <div className="min-w-0 flex-1">
         <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 sm:px-6">
           <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}>
             <Menu aria-hidden="true" />
