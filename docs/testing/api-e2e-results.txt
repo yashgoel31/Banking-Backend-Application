@@ -1,12 +1,6 @@
-BankSphere E2E against http://localhost:8080 (run 955a9ded)
+BankSphere E2E against http://localhost:8080 (run 8dd0aa5f)
 
 Administrators: MFA & four-eyes staff onboarding
-  ✔ admin: a staff session without MFA cannot use privileged APIs (403 MFA_REQUIRED)
-  ✔ admin: staff MFA enrolment needs the one-time enrolment token (stolen password is not enough)
-  ✔ admin: enrols TOTP with the enrolment token
-  ✔ admin2: a staff session without MFA cannot use privileged APIs (403 MFA_REQUIRED)
-  ✔ admin2: staff MFA enrolment needs the one-time enrolment token (stolen password is not enough)
-  ✔ admin2: enrols TOTP with the enrolment token
   ✔ MFA: with MFA enrolled, the password alone only returns a challenge (no tokens)
   ✔ MFA: a wrong code is rejected
   ✔ staff creation never accepts an administrator-chosen password (400)
@@ -233,5 +227,5 @@ Staff-only data, admin controls & internal API
 Global
   ✔ no request in the whole run returned a 5xx
 
-207 passed, 0 failed
+201 passed, 0 failed
 
