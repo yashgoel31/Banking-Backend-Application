@@ -1,7 +1,7 @@
 # BankSphere web app: static build served by an unprivileged nginx that also proxies /api to the gateway.
 #   docker build -t banksphere-web ./frontend
 
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS build
 WORKDIR /app
 ENV CI=true
 COPY package.json package-lock.json ./
