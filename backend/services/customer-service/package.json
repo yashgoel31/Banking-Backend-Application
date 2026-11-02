@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@banksphere/common": "*",
-    "@prisma/client": "^5.14.0",
+    "@prisma/client": "^7.10.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "ioredis": "^5.4.1",
