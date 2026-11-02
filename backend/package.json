@@ -18,7 +18,7 @@
     "access-matrix:check": "node scripts/access-matrix.mjs --check"
   },
   "devDependencies": {
-    "typescript": "^5.4.5"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22"
