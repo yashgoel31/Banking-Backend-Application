@@ -1,7 +1,7 @@
 # One Dockerfile for every service:  docker build --build-arg SERVICE=auth-service .
 # The "build" stage keeps dev tooling (Prisma CLI) and doubles as the migration runner image.
 
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS build
 RUN apk add --no-cache openssl
 WORKDIR /app
 ENV CI=true
@@ -26,7 +26,7 @@ RUN npm run build
 FROM build AS prune
 RUN npm prune --omit=dev --no-audit --no-fund
 
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS runtime
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS runtime
 RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 WORKDIR /app
