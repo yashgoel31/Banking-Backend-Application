@@ -275,7 +275,7 @@ services:
   # every service has its own SCRAM-SHA-512 user and may only produce/consume its own topics.
   # The PLAIN "admin" principal exists only inside the broker and the kafka-init job.
   kafka:
-    image: apache/kafka:3.8.1@sha256:22c4bea38875408e8f9fe52aca8e3a6ee67f9aa0090db59af99a2f6647558db5
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
     restart: always
     mem_limit: 1g
     networks: [backend]
@@ -320,7 +320,7 @@ services:
 
   # Creates topics, per-service SCRAM users and least-privilege ACLs (idempotent)
   kafka-init:
-    image: apache/kafka:3.8.1@sha256:22c4bea38875408e8f9fe52aca8e3a6ee67f9aa0090db59af99a2f6647558db5
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
     networks: [backend]
     depends_on:
       kafka:
