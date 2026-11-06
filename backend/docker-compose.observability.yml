@@ -92,7 +92,7 @@ services:
 
   postgres-exporter:
     <<: *exporter
-    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     environment:
       # Straight to Postgres (not PgBouncer): pg_stat_* views are per server
       DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-banksphere}?sslmode=disable
@@ -104,7 +104,7 @@ services:
   # One exporter per Redis instance: security (AOF, never evicts), edge rate limits, application cache
   redis-exporter-security:
     <<: *exporter
-    image: oliver006/redis_exporter:v1.62.0
+    image: oliver006/redis_exporter:v1.96.0
     environment:
       REDIS_ADDR: redis://redis:6379
       # The read-only `reader` ACL user already has PING and INFO
@@ -115,7 +115,7 @@ services:
 
   redis-exporter-ratelimit:
     <<: *exporter
-    image: oliver006/redis_exporter:v1.62.0
+    image: oliver006/redis_exporter:v1.96.0
     networks: [apps, observability]
     environment:
       REDIS_ADDR: redis://redis-ratelimit:6379
@@ -123,7 +123,7 @@ services:
 
   redis-exporter-cache:
     <<: *exporter
-    image: oliver006/redis_exporter:v1.62.0
+    image: oliver006/redis_exporter:v1.96.0
     environment:
       REDIS_ADDR: redis://redis-cache:6379
       REDIS_USER: monitor
@@ -131,7 +131,7 @@ services:
 
   kafka-exporter:
     <<: *exporter
-    image: danielqsj/kafka-exporter:v1.8.0
+    image: danielqsj/kafka-exporter:v1.11.0
     command:
       - --kafka.server=kafka:29092
       - --sasl.enabled
