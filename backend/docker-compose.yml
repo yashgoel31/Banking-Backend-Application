@@ -142,7 +142,7 @@ services:
 
   # Security state (token versions, revoked jtis, lockouts): AOF-persisted and never evicted
   redis:
-    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: redis:8.0-alpine@sha256:5f61955be8ab2ccee9372b84ae4d4da2e2b156f87281e3f218544055e7ee04d4
     restart: always
     mem_limit: 320m
     networks: [backend]
@@ -234,7 +234,7 @@ services:
 
   # Application caches and real-time fan-out: evictable, not persisted, one ACL user per service
   redis-cache:
-    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: redis:8.0-alpine@sha256:5f61955be8ab2ccee9372b84ae4d4da2e2b156f87281e3f218544055e7ee04d4
     restart: always
     mem_limit: 256m
     networks: [backend]
@@ -258,7 +258,7 @@ services:
 
   # Gateway rate-limit counters only: may evict, so a request flood can never exhaust security state
   redis-ratelimit:
-    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: redis:8.0-alpine@sha256:5f61955be8ab2ccee9372b84ae4d4da2e2b156f87281e3f218544055e7ee04d4
     restart: always
     mem_limit: 160m
     networks: [apps]
