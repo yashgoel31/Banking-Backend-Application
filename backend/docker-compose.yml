@@ -71,7 +71,7 @@ networks:
 
 services:
   postgres:
-    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     restart: always
     mem_limit: 768m
     networks: [backend]
@@ -164,7 +164,7 @@ services:
   # One-shot job on every deployment: re-applies docker/postgres/init-schemas.sh (idempotent) as the superuser,
   # so schemas and roles of services added after the volume was created exist before migrations run
   db-bootstrap:
-    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     networks: [backend]
     environment:
       PGHOST: postgres
