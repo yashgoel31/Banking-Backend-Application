@@ -32,7 +32,7 @@ volumes:
 
 services:
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.15.1
     restart: unless-stopped
     user: "65534:65534"
     read_only: true
