@@ -1,23 +1,23 @@
 import { Link, useLocation, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Eye, UserX } from 'lucide-react';
+import { UserX } from 'lucide-react';
 import { useApi, useUser } from '@/lib/auth/AuthProvider';
 import type { Role } from '@/lib/auth/session';
 import { qk } from '@/lib/query';
 import { UUID_PATTERN } from '@/lib/validation';
+import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/button';
-import { ErrorState } from '@/components/ui/data';
-import { Callout, Card, CardContent, CardHeader, CardTitle, EmptyState, Mono, PageHeader, Skeleton } from '@/components/ui/primitives';
+import { Card, EmptyState, PageHeader, Skeleton } from '@/components/ui/primitives';
 import { AccountsSection } from './components/AccountsSection';
-import { KycBadge } from './components/badges';
 import type { BackLink } from './components/CustomerTable';
 import { LoadingAnnouncement } from './components/LoadingAnnouncement';
 import { KycDecisionPanel } from './components/KycDecisionPanel';
 import { KycHistoryCard } from './components/KycHistoryCard';
-import { ProfileCard } from './components/ProfileCard';
+import { ProfileHeader, type ProfileState } from './components/ProfileCard';
 import { SignInAccessCard, useDirectoryUser } from './components/SignInAccessCard';
 import { shortId } from './components/format';
 import { isNotFound } from './components/hooks';
+import { BackLink as BackLinkView } from './components/layout';
 
 const HISTORY_ROLES: Role[] = ['KYC_OFFICER', 'BANK_ADMIN', 'SUPPORT'];
 const ACCESS_ROLES: Role[] = ['BANK_ADMIN', 'SUPPORT'];
@@ -36,8 +36,8 @@ function backLinkFor(state: unknown, role: Role): BackLink | null {
 
 function NotFound({ role, back }: { role: Role; back: BackLink | null }) {
   return (
-    <div className="space-y-6">
-      {back ? <BackLinkView back={back} /> : null}
+    <div className="space-y-6 lg:space-y-8">
+      {back ? <BackLinkView to={back.from} label={back.fromLabel} /> : null}
       <PageHeader title="Customer not found" />
       <Card>
         <EmptyState
@@ -46,7 +46,7 @@ function NotFound({ role, back }: { role: Role; back: BackLink | null }) {
           description="Check the ID, or search for the customer by name or phone number."
           action={
             SEARCH_ROLES.includes(role) ? (
-              <Button asChild variant="outline">
+              <Button asChild variant="secondary">
                 <Link to="/customers">Search customers</Link>
               </Button>
             ) : null
@@ -57,14 +57,11 @@ function NotFound({ role, back }: { role: Role; back: BackLink | null }) {
   );
 }
 
-function BackLinkView({ back }: { back: BackLink }) {
-  return (
-    <Link to={back.from} className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="size-4" aria-hidden="true" /> {back.fromLabel}
-    </Link>
-  );
-}
-
+/**
+ * Customer 360. The profile is the header tile; the person's own tools (a KYC decision, sign-in controls)
+ * sit beside it with the KYC history, and the accounts take the main column. On phones the tiles stack in
+ * that order: who, what to decide, then the accounts.
+ */
 export default function CustomerDetailPage() {
   const { userId = '' } = useParams();
   const api = useApi();
@@ -95,61 +92,43 @@ export default function CustomerDetailPage() {
 
   const name = profile?.fullName ?? directoryUser?.email ?? 'this customer';
   const loading = profileQuery.isPending || checkingMissing;
+  const state: ProfileState = profile
+    ? { kind: 'ready', profile }
+    : loading
+      ? { kind: 'loading' }
+      : profileMissing
+        ? { kind: 'missing' }
+        : { kind: 'error', error: profileQuery.error, onRetry: () => void profileQuery.refetch() };
+
+  const decides = user.role === 'KYC_OFFICER' && profile;
+  const showHistory = canSeeHistory && !profileMissing;
+  const side = decides || canSeeAccess || showHistory;
 
   return (
-    <div className="space-y-6">
-      {back ? <BackLinkView back={back} /> : null}
+    <div className="space-y-6 lg:space-y-8">
+      {back ? <BackLinkView to={back.from} label={back.fromLabel} /> : null}
       <LoadingAnnouncement active={loading} label="Loading customer…" />
-      <PageHeader
-        eyebrow="Customer"
-        title={profile?.fullName ?? (loading ? <Skeleton className="h-8 w-56" /> : directoryUser?.email ?? `Customer ${shortId(userId)}`)}
-        description={
-          <span className="inline-flex flex-wrap items-center gap-1.5">
-            User ID <Mono value={userId} short={false} copy />
-          </span>
-        }
-        actions={profile ? <KycBadge status={profile.kycStatus} /> : null}
-      />
-      <p className="-mt-3 flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
-        <Eye className="size-3.5 shrink-0" aria-hidden="true" />
-        Your access to this record is logged.
-      </p>
-
-      <div className="grid gap-6 lg:grid-cols-3 lg:items-start">
-        <div className="min-w-0 space-y-6 lg:col-span-2">
-          {profile ? (
-            <ProfileCard profile={profile}>
-              {user.role === 'KYC_OFFICER' ? <KycDecisionPanel profile={profile} me={user.id} /> : null}
-            </ProfileCard>
-          ) : loading ? (
-            <Card aria-hidden="true">
-              <CardHeader>
-                <Skeleton className="h-4 w-24" />
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-5/6" />
-                <Skeleton className="h-4 w-2/3" />
-              </CardContent>
-            </Card>
-          ) : profileMissing ? (
-            <Callout tone="info" title="No profile yet">
-              This customer has registered but hasn’t completed their profile, so there are no identity details to review.
-            </Callout>
-          ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle>Profile</CardTitle>
-              </CardHeader>
-              <ErrorState error={profileQuery.error} onRetry={() => void profileQuery.refetch()} />
-            </Card>
-          )}
-          <AccountsSection customerId={userId} query={accountsQuery} canAdminister={isAdmin} me={user.id} />
-        </div>
-        <div className="min-w-0 space-y-6">
-          {canSeeAccess ? <SignInAccessCard userId={userId} name={name} query={directoryQuery} canManage={isAdmin} me={user.id} /> : null}
-          {canSeeHistory && !profileMissing ? <KycHistoryCard userId={userId} me={user.id} /> : null}
-        </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:gap-6">
+        <ProfileHeader
+          userId={userId}
+          title={profile?.fullName ?? (loading ? <Skeleton className="h-8 w-56" /> : (directoryUser?.email ?? `Customer ${shortId(userId)}`))}
+          state={state}
+          className={cn('min-w-0', side ? 'lg:col-span-8' : 'lg:col-span-12')}
+        />
+        {side ? (
+          <div className="min-w-0 space-y-5 lg:col-span-4 lg:row-span-2 lg:space-y-6 lg:self-start">
+            {decides ? <KycDecisionPanel profile={decides} me={user.id} /> : null}
+            {canSeeAccess ? <SignInAccessCard userId={userId} name={name} query={directoryQuery} canManage={isAdmin} me={user.id} /> : null}
+            {showHistory ? <KycHistoryCard userId={userId} me={user.id} /> : null}
+          </div>
+        ) : null}
+        <AccountsSection
+          customerId={userId}
+          query={accountsQuery}
+          canAdminister={isAdmin}
+          me={user.id}
+          className={cn('min-w-0', side ? 'lg:col-span-8' : 'lg:col-span-12')}
+        />
       </div>
     </div>
   );

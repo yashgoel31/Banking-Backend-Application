@@ -1,17 +1,20 @@
-import { useState, type ReactNode } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { useState } from 'react';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { ChevronsUpDown, LogOut, Menu, Monitor, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { ChevronRight, ChevronsUpDown, Ellipsis, LogOut, Monitor, Moon, Sun } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useAuth, useUser } from '@/lib/auth/AuthProvider';
 import { useTheme, type ThemePreference } from '@/lib/theme';
-import { NAVIGATION, ROLE_LABEL, type NavSection } from '@/app/navigation';
+import { DESKTOP_QUERY, useMediaQuery } from '@/lib/useMediaQuery';
+import { ACCOUNT_LINKS, HOME, NAVIGATION, ROLE_LABEL, type NavItem, type NavSection } from '@/app/navigation';
 import { Avatar } from '@/components/ui/primitives';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   SheetContent,
@@ -20,45 +23,13 @@ import {
 import { Button } from '@/components/ui/button';
 import { BrandLogo } from './Brand';
 
-function SidebarNav({ sections, onNavigate }: { sections: NavSection[]; onNavigate?: () => void }) {
-  return (
-    <nav aria-label="Main" className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
-      {sections.map((section, index) => (
-        <div key={section.title ?? index} className="space-y-1">
-          {section.title ? (
-            <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted">{section.title}</p>
-          ) : null}
-          {section.items.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/teller'}
-              onClick={onNavigate}
-              className={({ isActive }) =>
-                cn(
-                  'group flex h-9 items-center gap-3 rounded-md px-3 text-[13.5px] font-medium transition-colors',
-                  isActive
-                    ? 'bg-sidebar-active text-white shadow-[inset_2px_0_0_0_#6E93FF]'
-                    : 'text-sidebar-foreground/80 hover:bg-sidebar-active/70 hover:text-white'
-                )
-              }
-            >
-              <item.icon className="size-4 shrink-0 opacity-80 group-hover:opacity-100" aria-hidden="true" />
-              {item.label}
-            </NavLink>
-          ))}
-        </div>
-      ))}
-    </nav>
-  );
-}
-
 const THEME_OPTIONS: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'dark', label: 'Dark', icon: Moon },
   { value: 'system', label: 'System', icon: Monitor },
 ];
 
+/** Cycles light → dark → system (used where there is no account menu, e.g. sign-in pages) */
 export function ThemeToggle() {
   const { preference, resolved, setTheme } = useTheme();
   const next = THEME_OPTIONS[(THEME_OPTIONS.findIndex((o) => o.value === preference) + 1) % THEME_OPTIONS.length]!;
@@ -72,40 +43,63 @@ export function ThemeToggle() {
   );
 }
 
-function UserMenu({ compact }: { compact?: boolean }) {
+/** The routes `/teller` and `/teller/operations` share a prefix: only the exact one is current */
+const exact = (item: NavItem) => item.to === '/teller';
+
+// --- Account menu -----------------------------------------------------------------------------
+
+function UserMenu({ variant }: { variant: 'avatar' | 'sidebar' }) {
   const user = useUser();
   const { signOut } = useAuth();
   const navigate = useNavigate();
+  const { preference, setTheme } = useTheme();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors hover:bg-sidebar-active focus-visible:ring-2 focus-visible:ring-[#6E93FF] cursor-pointer',
-            compact && 'w-auto'
-          )}
-          aria-label="Account menu"
-        >
-          <Avatar name={user.email} className="bg-[#1F2C4D] text-[#B9C8FF]" />
-          {compact ? null : (
+        {variant === 'avatar' ? (
+          <button
+            type="button"
+            className="flex size-9 items-center justify-center rounded-full transition-[box-shadow] hover:shadow-[0_0_0_4px_hsl(var(--foreground)/0.06)] focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+            aria-label="Account menu"
+          >
+            <Avatar name={user.email} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-xl p-2 text-left transition-colors hover:bg-foreground/[0.05] focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+            aria-label="Account menu"
+          >
+            <Avatar name={user.email} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[13px] font-medium text-white">{user.email}</span>
-              <span className="block truncate text-[12px] text-sidebar-muted">{ROLE_LABEL[user.role]}</span>
+              <span className="block truncate text-[13px] font-medium tracking-[-0.01em]">{user.email}</span>
+              <span className="block truncate text-[12px] text-muted-foreground">{ROLE_LABEL[user.role]}</span>
             </span>
-          )}
-          {compact ? null : <ChevronsUpDown className="size-4 text-sidebar-muted" aria-hidden="true" />}
-        </button>
+            <ChevronsUpDown className="size-4 text-muted-foreground" aria-hidden="true" />
+          </button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="top" className="w-60">
+      <DropdownMenuContent align="end" side={variant === 'sidebar' ? 'top' : 'bottom'} sideOffset={8} className="w-64">
         <DropdownMenuLabel>
-          <span className="block truncate font-medium text-foreground">{user.email}</span>
+          <span className="block truncate text-[14px] font-semibold tracking-[-0.01em] text-foreground">{user.email}</span>
           <span className="block">{ROLE_LABEL[user.role]}</span>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => navigate('/settings/security')}>
-          <ShieldCheck aria-hidden="true" /> Security settings
-        </DropdownMenuItem>
+        {ACCOUNT_LINKS[user.role].map((link) => (
+          <DropdownMenuItem key={link.to} onSelect={() => navigate(link.to)}>
+            <link.icon aria-hidden="true" /> {link.label}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>Appearance</DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={preference} onValueChange={(value) => setTheme(value as ThemePreference)}>
+          {THEME_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              <option.icon aria-hidden="true" /> {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
         <DropdownMenuItem
           destructive
           onSelect={async () => {
@@ -120,72 +114,227 @@ function UserMenu({ compact }: { compact?: boolean }) {
   );
 }
 
-function SidebarFrame({ children, onNavigate }: { children?: ReactNode; onNavigate?: () => void }) {
-  const user = useUser();
+// --- Desktop: top bar (customers) -------------------------------------------------------------
+
+function TopNav({ items }: { items: NavItem[] }) {
   return (
-    <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex h-16 items-center gap-2 border-b border-white/[0.06] px-5">
-        <BrandLogo inverted />
-      </div>
-      <div className="px-5 pt-4">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11.5px] font-medium text-sidebar-foreground/90">
-          <span className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
-          {ROLE_LABEL[user.role]}
-        </span>
-      </div>
-      <SidebarNav sections={NAVIGATION[user.role]} onNavigate={onNavigate} />
-      {children}
-      <div className="border-t border-white/[0.06] p-3">
-        <UserMenu />
-      </div>
-    </div>
+    <nav aria-label="Main" className="flex items-center gap-0.5">
+      {items.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={exact(item)}
+          className={({ isActive }) =>
+            cn(
+              'inline-flex h-9 items-center rounded-full px-4 text-[14px] font-medium tracking-[-0.01em] transition-colors duration-200',
+              isActive ? 'bg-foreground/[0.07] text-foreground' : 'text-muted-foreground hover:text-foreground'
+            )
+          }
+        >
+          {item.label}
+        </NavLink>
+      ))}
+    </nav>
   );
 }
 
-/** Authenticated application frame: sidebar on desktop, drawer on mobile */
-export function AppShell() {
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const location = useLocation();
+// --- Desktop: sidebar (staff) -----------------------------------------------------------------
+
+function SidebarNav({ sections }: { sections: NavSection[] }) {
   return (
-    <div className="min-h-dvh bg-canvas lg:flex">
-      <a
-        href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:shadow-elevated"
-      >
-        Skip to content
-      </a>
-      {/* A full-height column whose contents stick to the viewport while the page scrolls */}
-      <aside className="z-40 hidden w-[248px] shrink-0 bg-sidebar lg:block" aria-label="Sidebar">
-        <div className="sticky top-0 h-dvh">
-          <SidebarFrame />
+    <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 pb-4">
+      {sections.map((section, index) => (
+        <div key={section.title ?? index} className="mt-6 first:mt-2">
+          {section.title ? <p className="px-3 pb-1.5 text-[12px] font-semibold text-muted-foreground">{section.title}</p> : null}
+          <ul className="space-y-0.5">
+            {section.items.map((item) => (
+              <li key={item.to}>
+                <NavLink
+                  to={item.to}
+                  end={exact(item)}
+                  className={({ isActive }) =>
+                    cn(
+                      'group flex h-9 items-center gap-3 rounded-[10px] px-3 text-[14px] font-medium tracking-[-0.01em] transition-colors duration-150',
+                      isActive ? 'bg-card text-foreground shadow-card' : 'text-foreground/75 hover:bg-foreground/[0.045] hover:text-foreground'
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <item.icon
+                        className={cn('size-[18px] shrink-0', isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground')}
+                        strokeWidth={isActive ? 2 : 1.75}
+                        aria-hidden="true"
+                      />
+                      {item.label}
+                    </>
+                  )}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
         </div>
-      </aside>
+      ))}
+    </nav>
+  );
+}
 
-      <DialogPrimitive.Root open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="left" title="Navigation" className="w-[280px] border-0 bg-sidebar p-0">
-          <SidebarFrame onNavigate={() => setMobileOpen(false)} />
-        </SheetContent>
-      </DialogPrimitive.Root>
+// --- Phones and tablets: tab bar --------------------------------------------------------------
 
-      <div className="min-w-0 flex-1">
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 sm:px-6">
-          <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}>
-            <Menu aria-hidden="true" />
-          </Button>
-          <div className="lg:hidden">
-            <BrandLogo />
+const MAX_TABS = 5;
+
+function TabBar({ sections }: { sections: NavSection[] }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const location = useLocation();
+  const all = sections.flatMap((s) => s.items);
+  const tabs = all.length <= MAX_TABS ? all : all.slice(0, MAX_TABS - 1);
+  const overflow = all.length > MAX_TABS ? all.slice(MAX_TABS - 1) : [];
+  const moreActive = overflow.some((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`));
+  const tabClass = (active: boolean) =>
+    cn(
+      'flex min-h-[54px] w-full flex-col items-center justify-center gap-[3px] pt-1.5 text-[10.5px] font-medium tracking-[0.01em] transition-colors duration-150 active:opacity-60 cursor-pointer',
+      active ? 'text-primary' : 'text-muted-foreground'
+    );
+  return (
+    <nav
+      aria-label="Main"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-border/70 bg-background/80 pb-safe backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-background/70"
+    >
+      <ul className="mx-auto flex max-w-xl px-2">
+        {tabs.map((item) => (
+          <li key={item.to} className="flex flex-1">
+            <NavLink to={item.to} end={exact(item)} aria-label={item.short ? item.label : undefined} className={({ isActive }) => tabClass(isActive)}>
+              {({ isActive }) => (
+                <>
+                  <item.icon className="size-[23px]" strokeWidth={isActive ? 2.1 : 1.7} aria-hidden="true" />
+                  <span>{item.short ?? item.label}</span>
+                </>
+              )}
+            </NavLink>
+          </li>
+        ))}
+        {overflow.length ? (
+          <li className="flex flex-1">
+            <button type="button" className={tabClass(moreActive)} aria-haspopup="dialog" onClick={() => setMoreOpen(true)}>
+              <Ellipsis className="size-[23px]" strokeWidth={moreActive ? 2.1 : 1.7} aria-hidden="true" />
+              <span>More</span>
+            </button>
+          </li>
+        ) : null}
+      </ul>
+      {overflow.length ? (
+        <DialogPrimitive.Root open={moreOpen} onOpenChange={setMoreOpen}>
+          <SheetContent side="bottom" title="All sections" className="bg-canvas">
+            <div className="overflow-y-auto px-4 pb-6 pt-2">
+              <p className="px-1 pb-4 text-title-3">All sections</p>
+              {sections.map((section, index) => (
+                <div key={section.title ?? index} className="mb-5 last:mb-0">
+                  {section.title ? <p className="group-label px-4 pb-1.5">{section.title}</p> : null}
+                  <ul className="divide-y overflow-hidden rounded-2xl bg-card shadow-card">
+                    {section.items.map((item) => (
+                      <li key={item.to}>
+                        <NavLink
+                          to={item.to}
+                          end={exact(item)}
+                          onClick={() => setMoreOpen(false)}
+                          className={({ isActive }) =>
+                            cn('flex h-[52px] items-center gap-3 px-4 text-[16px] tracking-[-0.01em] active:bg-accent', isActive && 'font-semibold text-primary')
+                          }
+                        >
+                          <item.icon className="size-5 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />
+                          {item.label}
+                          <ChevronRight className="ml-auto size-4 text-muted-foreground/60" aria-hidden="true" />
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </SheetContent>
+        </DialogPrimitive.Root>
+      ) : null}
+    </nav>
+  );
+}
+
+// --- Frame ------------------------------------------------------------------------------------
+
+function SkipLink() {
+  return (
+    <a
+      href="#main"
+      className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-full focus:bg-background focus:px-4 focus:py-2 focus:shadow-elevated"
+    >
+      Skip to content
+    </a>
+  );
+}
+
+/**
+ * Authenticated frame.
+ *  - Desktop customers: a translucent top bar with the destinations centred, like a consumer app.
+ *  - Desktop staff: a quiet sidebar, like a professional tool.
+ *  - Phones and tablets, everyone: a compact top bar and a bottom tab bar within thumb reach.
+ * Only one navigation is mounted at a time, so there is always exactly one "Main" landmark.
+ */
+export function AppShell() {
+  const user = useUser();
+  const location = useLocation();
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const sections = NAVIGATION[user.role];
+  const home = HOME[user.role];
+  const consumer = user.role === 'CUSTOMER';
+  const page = (
+    <div key={location.pathname} className="animate-rise">
+      <Outlet />
+    </div>
+  );
+
+  if (desktop && !consumer) {
+    return (
+      <div className="flex min-h-dvh bg-canvas">
+        <SkipLink />
+        <aside className="sticky top-0 flex h-dvh w-[264px] shrink-0 flex-col border-r border-border/70" aria-label="Sidebar">
+          <div className="flex h-[68px] items-center px-5">
+            <Link to={home} className="rounded-lg focus-visible:ring-2 focus-visible:ring-ring">
+              <BrandLogo />
+            </Link>
           </div>
-          <div className="ml-auto flex items-center gap-1">
-            <span className="mr-2 hidden items-center gap-1.5 text-[12px] text-muted-foreground sm:inline-flex">
-              <ShieldCheck className="size-3.5 text-success" aria-hidden="true" /> Secure session
-            </span>
-            <ThemeToggle />
+          <SidebarNav sections={sections} />
+          <div className="border-t border-border/70 p-3">
+            <UserMenu variant="sidebar" />
           </div>
-        </header>
-        <main id="main" key={location.pathname} className="mx-auto w-full max-w-[1280px] animate-fade-in px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-          <Outlet />
+        </aside>
+        <main id="main" className="min-w-0 flex-1">
+          <div className="mx-auto w-full max-w-[1320px] px-10 pb-16 pt-10">{page}</div>
         </main>
       </div>
+    );
+  }
+
+  const container = consumer ? 'max-w-[1120px]' : 'max-w-[1320px]';
+  return (
+    <div className="min-h-dvh overflow-x-clip bg-canvas">
+      <SkipLink />
+      <header className="sticky top-0 z-30 border-b border-border/70 bg-canvas/80 pt-[env(safe-area-inset-top)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-canvas/70">
+        <div className={cn('mx-auto grid h-14 w-full grid-cols-[1fr_auto] items-center gap-4 px-4 sm:px-6 lg:h-16 lg:grid-cols-[1fr_auto_1fr] lg:px-10', container)}>
+          <Link to={home} className="justify-self-start rounded-lg focus-visible:ring-2 focus-visible:ring-ring">
+            <BrandLogo />
+          </Link>
+          {desktop ? <TopNav items={sections.flatMap((s) => s.items)} /> : null}
+          <div className="justify-self-end">
+            <UserMenu variant="avatar" />
+          </div>
+        </div>
+      </header>
+      <main
+        id="main"
+        className={cn('mx-auto w-full px-4 pt-6 sm:px-6 lg:px-10 lg:pb-16 lg:pt-10', container, !desktop && 'pb-[calc(6.5rem+env(safe-area-inset-bottom))]')}
+      >
+        {page}
+      </main>
+      {desktop ? null : <TabBar sections={sections} />}
     </div>
   );
 }

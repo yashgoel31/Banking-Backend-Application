@@ -12,11 +12,11 @@ export function RouteError() {
     ? 'BankSphere was updated while this page was open. Reload to continue — nothing you submitted was lost.'
     : 'An unexpected error stopped this page from loading. Reloading usually fixes it.';
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-canvas px-6 text-center" role="alert">
-      <BrandMark className="size-10" />
-      <h1 className="text-xl font-semibold">{title}</h1>
-      <p className="max-w-md text-sm text-muted-foreground">{description}</p>
-      <Button onClick={() => window.location.reload()}>
+    <div className="flex min-h-dvh flex-col items-center justify-center bg-canvas px-6 text-center" role="alert">
+      <BrandMark className="size-11" />
+      <h1 className="mt-8 text-[28px] font-bold leading-[34px] tracking-[-0.03em]">{title}</h1>
+      <p className="mt-3 max-w-md text-pretty text-[15px] leading-[22px] text-muted-foreground">{description}</p>
+      <Button size="lg" className="mt-8" onClick={() => window.location.reload()}>
         <RotateCw aria-hidden="true" /> Reload
       </Button>
     </div>

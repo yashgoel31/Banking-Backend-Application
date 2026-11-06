@@ -14,21 +14,31 @@ const NEW_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const render = () => renderWithApp(<AccountsPage />, { route: '/accounts' });
 
 describe('AccountsPage', () => {
-  it('lists each account with its number, type, status, balance and daily limit', async () => {
+  it('shows each account as a card with its number, type, balance, daily limit and any non-active status', async () => {
     mockCustomerApi({ profile: aProfile(), accounts: [savings, current], balances: { [IDS.savings]: '12550075', [IDS.current]: '4999925' } });
     render();
     await screen.findByRole('link', { name: 'Savings account' });
-    const table = screen.getByRole('table', { name: /your accounts/i });
-    const rows = within(table).getAllByRole('row').slice(1);
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0]!).getByRole('link', { name: 'Savings account' })).toHaveAttribute('href', `/accounts/${IDS.savings}`);
-    expect(rows[0]).toHaveTextContent('1001 2345 6789');
-    expect(within(rows[0]!).getByText('Active')).toBeInTheDocument();
-    expect(await within(rows[0]!).findByText('₹1,25,500.75')).toBeInTheDocument();
-    expect(rows[0]).toHaveTextContent('₹1,00,000.00');
-    expect(within(rows[1]!).getByRole('link', { name: 'Current account' })).toBeInTheDocument();
-    expect(within(rows[1]!).getByText('Frozen')).toBeInTheDocument();
-    expect(rows[1]).toHaveTextContent('₹25,000.00');
+    const list = screen.getByRole('list', { name: /your accounts/i });
+    const cards = within(list).getAllByRole('listitem');
+    expect(cards).toHaveLength(2);
+    expect(within(cards[0]!).getByRole('link', { name: 'Savings account' })).toHaveAttribute('href', `/accounts/${IDS.savings}`);
+    expect(cards[0]).toHaveTextContent('1001 2345 6789');
+    // Active is the normal state: only other statuses are called out
+    expect(within(cards[0]!).queryByText('Active')).not.toBeInTheDocument();
+    await waitFor(() => expect(cards[0]).toHaveTextContent('₹1,25,500.75'));
+    expect(cards[0]).toHaveTextContent('Daily limit ₹1,00,000.00');
+    expect(within(cards[1]!).getByRole('link', { name: 'Current account' })).toBeInTheDocument();
+    expect(within(cards[1]!).getByText('Frozen')).toBeInTheDocument();
+    expect(cards[1]).toHaveTextContent('Daily limit ₹25,000.00');
+  });
+
+  it('lists closed accounts apart, still linking to their statements', async () => {
+    const closed = anAccount({ id: IDS.current, accountNumber: '100111112222', status: 'CLOSED' });
+    mockCustomerApi({ profile: aProfile(), accounts: [savings, closed], balances: { [IDS.savings]: '1' } });
+    render();
+    const panel = await screen.findByRole('region', { name: 'Closed accounts' });
+    expect(within(panel).getByRole('link', { name: /savings account/i })).toHaveAttribute('href', `/accounts/${IDS.current}`);
+    expect(within(screen.getByRole('list', { name: /your accounts/i })).getAllByRole('listitem')).toHaveLength(1);
   });
 
   it('copies the full account number without spaces', async () => {
@@ -50,7 +60,7 @@ describe('AccountsPage', () => {
     );
     const { user } = render();
     await user.click(await screen.findByRole('button', { name: /retry loading the balance/i }));
-    expect(await screen.findByText('₹5.00')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('list', { name: /your accounts/i })).toHaveTextContent('₹5.00'));
   });
 
   it('invites a verified customer with no accounts to open one', async () => {

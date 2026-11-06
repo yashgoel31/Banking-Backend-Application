@@ -28,7 +28,7 @@ export function UserActionsMenu({ user, onAction }: { user: DirectoryUser; onAct
     // Non-modal so the confirmation dialog can take focus as the menu closes
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label={`Actions for ${user.email}`}>
+        <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground max-md:size-11" aria-label={`Actions for ${user.email}`}>
           <MoreHorizontal aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>

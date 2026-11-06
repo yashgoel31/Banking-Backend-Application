@@ -44,7 +44,7 @@ function DailyLimitForm({ account, customerId, onDone }: { account: BankAccount;
         title="Set daily limit"
         description={`Account ${formatAccountNumber(account.accountNumber)} · currently ${formatPaise(account.dailyLimitPaise)} a day.`}
       />
-      <p className="rounded-md border bg-muted/50 px-3 py-2 text-[13px] text-muted-foreground">
+      <p className="rounded-xl bg-muted/70 px-4 py-3 text-pretty text-[13px] leading-[18px] text-muted-foreground">
         The limit you set becomes a bank-imposed ceiling: the customer can lower it but can’t raise it above this amount. Payments
         across all their accounts are still capped by the per-customer daily limit.
       </p>

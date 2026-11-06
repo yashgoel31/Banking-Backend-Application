@@ -53,6 +53,7 @@ See [docs/testing/test-plan.md](docs/testing/test-plan.md) and the latest
 ## Documentation
 
 - [Design](docs/superpowers/specs/2026-10-27-banksphere-fullstack-design.md)
+- [Design system](design-system/banksphere/MASTER.md): tokens, type, grid, components, patterns and what the UI must never do
 - [Security audit and fixes](docs/security/2026-10-27-security-audit.md)
 - [User stories and acceptance criteria](docs/user-stories.md)
 - [Screenshots](docs/screenshots/README.md)

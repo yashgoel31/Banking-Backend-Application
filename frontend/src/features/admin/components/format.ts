@@ -8,16 +8,12 @@ const DATE_TIME = new Intl.DateTimeFormat('en-IN', {
   hour: 'numeric',
   minute: '2-digit',
 });
-const LONG_DATE = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
 /** "1 Oct 2026" */
 export const formatDate = (iso: string) => DATE.format(new Date(iso));
 
 /** "27 Oct 2026, 3:00 pm" */
 export const formatDateTime = (iso: string) => DATE_TIME.format(new Date(iso));
-
-/** "Tuesday, 27 October 2026" */
-export const formatLongDate = (date: Date) => LONG_DATE.format(date);
 
 /** "2026-10-27" in the viewer's own time zone (toISOString would give the UTC date) */
 export const localDay = (date: Date) =>
@@ -27,10 +23,23 @@ export const localDay = (date: Date) =>
 export const relativeTime = (iso: string, now: number = Date.now()) =>
   formatDistanceStrict(new Date(iso), now, { addSuffix: true });
 
+/**
+ * "2 hours ago", for something that has already happened. The server's clock and this device's drift apart
+ * by seconds, so a timestamp slightly in the future reads "just now", never "in 4 seconds".
+ */
+export const timeAgo = (iso: string, now: number = Date.now()) => {
+  const at = new Date(iso).getTime();
+  return now - at < 60_000 ? 'just now' : formatDistanceStrict(at, now, { addSuffix: true });
+};
+
 /** "8 hours" */
 export const durationSince = (iso: string, now: number = Date.now()) => formatDistanceStrict(new Date(iso), now);
 
 export const isPast = (iso: string, now: number = Date.now()) => new Date(iso).getTime() <= now;
+
+/** True once something has been waiting at least `minutes` (no timestamp: nothing is waiting) */
+export const waitedLongerThan = (iso: string | null | undefined, minutes: number, now: number = Date.now()) =>
+  Boolean(iso) && now - new Date(iso as string).getTime() >= minutes * 60_000;
 
 export function greeting(date: Date = new Date()): string {
   const hour = date.getHours();

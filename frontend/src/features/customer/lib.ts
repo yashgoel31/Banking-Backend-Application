@@ -85,6 +85,37 @@ export function dayKey(value: string | Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+const weekdayFormat = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+const weekdayYearFormat = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+/** The heading above a day's transactions: "Today", "Yesterday", "Tuesday, 20 October" (with the year if it isn't this one) */
+export function dayHeading(value: string | Date, now = new Date()): string {
+  const date = new Date(value);
+  const key = dayKey(date);
+  if (key === dayKey(now)) return 'Today';
+  if (key === dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))) return 'Yesterday';
+  return (date.getFullYear() === now.getFullYear() ? weekdayFormat : weekdayYearFormat).format(date);
+}
+
+export interface DayGroup<T> {
+  /** Local calendar day, "2026-10-27" */
+  key: string;
+  heading: string;
+  items: T[];
+}
+
+/** Splits an already-sorted list into runs of items from the same local day, keeping their order */
+export function groupByDay<T>(items: T[], dateOf: (item: T) => string, now = new Date()): Array<DayGroup<T>> {
+  const groups: Array<DayGroup<T>> = [];
+  for (const item of items) {
+    const key = dayKey(dateOf(item));
+    const last = groups[groups.length - 1];
+    if (last?.key === key) last.items.push(item);
+    else groups.push({ key, heading: dayHeading(dateOf(item), now), items: [item] });
+  }
+  return groups;
+}
+
 /** Pulls a paise amount out of a server message such as "Daily limits above 10000000 paise require…" */
 export function paiseInMessage(message: string): string | null {
   const match = /(\d{1,18}) paise/.exec(message);

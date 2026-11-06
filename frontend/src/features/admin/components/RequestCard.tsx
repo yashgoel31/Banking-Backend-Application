@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import { Check, Info, Undo2, X } from 'lucide-react';
+import { Info } from 'lucide-react';
 import type { AdminRequest } from '@/lib/api/types';
 import { Button } from '@/components/ui/button';
 import { Badge, StatusBadge } from '@/components/ui/primitives';
@@ -38,15 +38,21 @@ export function requestPermissions(request: AdminRequest, meId: string, now: num
   return { mine, aboutMe, expired, canApprove, canReject, note };
 }
 
-function Meta({ label, children, wide }: { label: string; children: ReactNode; wide?: boolean }) {
+/** One label/value line of the card's facts */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    // People's emails get a full row on phones; the two times share one
-    <div className={wide ? 'col-span-2 min-w-0 space-y-0.5 sm:col-span-1' : 'min-w-0 space-y-0.5'}>
-      <dt className="text-[12px] text-muted-foreground">{label}</dt>
-      <dd className="text-[13px]">{children}</dd>
-    </div>
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">{children}</dd>
+    </>
   );
 }
+
+const Dot = () => (
+  <span aria-hidden="true" className="text-muted-foreground">
+    ·
+  </span>
+);
 
 export function RequestCard({
   request,
@@ -75,92 +81,91 @@ export function RequestCard({
   const rejectLabel = rules.mine ? 'Withdraw' : 'Reject';
 
   return (
-    <article aria-labelledby={`${titleId} ${subjectId}`} className="rounded-lg border bg-card p-4 sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-        <div className="min-w-0 space-y-1.5">
-          <h3 id={titleId} className="text-sm font-semibold leading-5">
+    <article aria-labelledby={`${titleId} ${subjectId}`} className="flex h-full flex-col rounded-2xl bg-card p-5 shadow-card sm:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <h3 id={titleId} className="text-headline">
             {title}
           </h3>
-          <p id={subjectId} className="flex flex-wrap items-center gap-2 text-sm">
+          <p id={subjectId} className="flex flex-wrap items-baseline gap-x-1.5 text-[15px] leading-[22px]">
             <RequestSubject request={request} resolve={resolve} />
           </p>
         </div>
+        {/* In the pending queue every card is pending: only an expired one needs saying */}
         {rules.expired ? (
-          <Badge tone="danger" dot>
+          <Badge tone="danger" dot className="mt-0.5 shrink-0">
             Expired
           </Badge>
-        ) : (
-          <StatusBadge status={request.status} />
+        ) : pending ? null : (
+          <StatusBadge status={request.status} className="mt-0.5 shrink-0" />
         )}
       </div>
 
-      <dl className={pending ? 'mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3' : 'mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4'}>
-        <Meta label="Requested by" wide>
+      <dl className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[14px] leading-5">
+        <Fact label="Requested by">
           <PersonName person={resolve(request.requestedBy)} />
-        </Meta>
-        {pending ? null : (
-          <Meta label="Decided by" wide>
+          <Dot />
+          <RelativeTime iso={request.createdAt} now={now} past className="text-muted-foreground" />
+        </Fact>
+        {pending ? (
+          rules.expired ? null : (
+            <Fact label="Expires">
+              <RelativeTime iso={request.expiresAt} now={now} />
+            </Fact>
+          )
+        ) : (
+          <Fact label="Decided by">
             {request.decidedBy ? (
-              <PersonName person={resolve(request.decidedBy)} />
+              <>
+                <PersonName person={resolve(request.decidedBy)} />
+                {request.decidedAt ? (
+                  <>
+                    <Dot />
+                    <time dateTime={request.decidedAt} className="text-muted-foreground tnum">
+                      {formatDateTime(request.decidedAt)}
+                    </time>
+                  </>
+                ) : null}
+              </>
             ) : (
               <span className="text-muted-foreground">Expired without a decision</span>
             )}
-          </Meta>
-        )}
-        <Meta label="Requested">
-          <RelativeTime iso={request.createdAt} now={now} />
-        </Meta>
-        {pending ? (
-          <Meta label="Expires">
-            <RelativeTime iso={request.expiresAt} now={now} className={rules.expired ? 'font-medium text-destructive' : undefined} />
-          </Meta>
-        ) : (
-          <>
-            <Meta label="Decided">
-              {request.decidedAt ? (
-                <time dateTime={request.decidedAt} className="tnum">
-                  {formatDateTime(request.decidedAt)}
-                </time>
-              ) : (
-                '—'
-              )}
-            </Meta>
-          </>
+          </Fact>
         )}
       </dl>
 
       {pending ? (
-        <div className="mt-4 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-          {rules.note ? (
-            <p id={noteId} className="flex items-start gap-2 text-[13px] text-muted-foreground">
-              <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-              <span>{rules.note}</span>
-            </p>
-          ) : (
-            <span />
-          )}
-          <div className="flex shrink-0 flex-col-reverse gap-2 sm:flex-row">
-            <Button
-              variant="outline"
-              className="w-full sm:w-auto"
-              disabled={!rules.canReject}
-              aria-label={`${rejectLabel} ${context}`}
-              aria-describedby={rules.note ? noteId : undefined}
-              onClick={() => onReject(request)}
-            >
-              {rules.mine ? <Undo2 aria-hidden="true" /> : <X aria-hidden="true" />}
-              {rejectLabel}
-            </Button>
-            <Button
-              className="w-full sm:w-auto"
-              disabled={!rules.canApprove}
-              aria-label={`Approve ${context}`}
-              aria-describedby={rules.note ? noteId : undefined}
-              onClick={() => onApprove(request)}
-            >
-              <Check aria-hidden="true" />
-              Approve
-            </Button>
+        <div className="mt-auto pt-5">
+          <div className="flex flex-col gap-4 border-t border-border/70 pt-4 sm:flex-row sm:items-center sm:justify-between">
+            {rules.note ? (
+              <p id={noteId} className="flex items-start gap-2 text-[13px] leading-[18px] text-muted-foreground">
+                <Info className="mt-px size-4 shrink-0" aria-hidden="true" />
+                <span>{rules.note}</span>
+              </p>
+            ) : (
+              <span className="hidden sm:block" />
+            )}
+            <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex">
+              <Button
+                variant="secondary"
+                className="max-sm:h-11"
+                disabled={!rules.canReject}
+                aria-label={`${rejectLabel} ${context}`}
+                aria-describedby={rules.note ? noteId : undefined}
+                onClick={() => onReject(request)}
+              >
+                {rejectLabel}
+              </Button>
+              <Button
+                className="max-sm:h-11"
+                disabled={!rules.canApprove}
+                aria-label={`Approve ${context}`}
+                aria-describedby={rules.note ? noteId : undefined}
+                onClick={() => onApprove(request)}
+              >
+                Approve
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}

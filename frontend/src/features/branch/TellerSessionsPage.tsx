@@ -8,21 +8,22 @@ import { formatPaise } from '@/lib/money';
 import { notifyError, notifySuccess } from '@/lib/notify';
 import { qk } from '@/lib/query';
 import { Button } from '@/components/ui/button';
-import { DataTable, Pagination, type Column } from '@/components/ui/data';
-import { Amount, Badge, Callout, Card, PageHeader, StatusBadge } from '@/components/ui/primitives';
+import { Pagination } from '@/components/ui/data';
+import { Amount, Badge, Callout, Card, PageHeader, type BadgeTone } from '@/components/ui/primitives';
 import { ConfirmDialog } from '@/components/ui/overlays';
 import {
   Discrepancy,
   PAGE_SIZE,
   StatusTabs,
   formatBusinessDate,
-  formatDateTime,
+  formatTimeOnDay,
   keepPageWithinFilter,
   settledByDispute,
   useStaffDirectory,
   type StatusTab,
   type SupervisorSession,
 } from './components/cash';
+import { RowTable, type RowColumn } from './components/RowTable';
 import { IssueFloatDialog, SignOffDialog } from './components/SessionDialogs';
 
 type Filter = 'ALL' | TellerSessionStatus;
@@ -36,7 +37,17 @@ const TABS: ReadonlyArray<StatusTab<Filter>> = [
   { value: 'CANCELLED', label: 'Cancelled' },
 ];
 
-const STATUS_LABEL: Partial<Record<TellerSessionStatus, string>> = { CLOSED: 'Awaiting sign-off', ISSUED: 'Float issued' };
+/**
+ * Only "awaiting sign-off" asks something of an administrator, so only it is amber; an open desk is live
+ * (green); everything else is settled or waiting on the teller (grey).
+ */
+const STATUS_BADGE: Record<TellerSessionStatus, { label: string; tone: BadgeTone }> = {
+  ISSUED: { label: 'Float issued', tone: 'neutral' },
+  OPEN: { label: 'Open', tone: 'success' },
+  CLOSED: { label: 'Awaiting sign-off', tone: 'warning' },
+  RECONCILED: { label: 'Reconciled', tone: 'neutral' },
+  CANCELLED: { label: 'Cancelled', tone: 'neutral' },
+};
 
 const EMPTY: Record<Filter, { title: string; description: string }> = {
   ALL: { title: 'No teller sessions yet', description: 'A teller’s day starts when an administrator issues their opening float.' },
@@ -91,47 +102,75 @@ export default function TellerSessionsPage() {
     }
   };
 
-  const columns: Column<SupervisorSession>[] = [
+  const columns: RowColumn<SupervisorSession>[] = [
     {
       key: 'teller',
       header: 'Teller',
-      cell: (s) => <span className="break-all font-medium">{tellers.label(s.tellerId)}</span>,
-    },
-    { key: 'date', header: 'Business date', cell: (s) => <span className="whitespace-nowrap">{formatBusinessDate(s.businessDate)}</span> },
-    { key: 'status', header: 'Status', cell: (s) => <StatusBadge status={s.status} label={STATUS_LABEL[s.status]} /> },
-    { key: 'float', header: 'Opening float', align: 'right', cell: (s) => <Amount paise={s.openingFloat} /> },
-    {
-      key: 'activity',
-      header: 'Last activity',
-      hideOnMobile: true,
+      phone: 'title',
       cell: (s) => {
-        const activity = lastActivity(s);
+        const label = tellers.label(s.tellerId);
         return (
-          <span className="whitespace-nowrap text-[13px]">
-            <span className="text-muted-foreground">{activity.label}</span> <span className="tnum">{formatDateTime(activity.at)}</span>
+          <span className="block truncate font-medium tracking-[-0.01em] md:max-w-[17rem]" title={label}>
+            {label}
           </span>
         );
       },
     },
     {
+      key: 'date',
+      header: 'Business date',
+      phone: 'detail',
+      cell: (s) => <span className="whitespace-nowrap">{formatBusinessDate(s.businessDate)}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      phone: 'end',
+      cell: (s) => {
+        const badge = STATUS_BADGE[s.status];
+        const activity = lastActivity(s);
+        return (
+          <div className="space-y-1">
+            <Badge tone={badge.tone} dot>
+              {badge.label}
+            </Badge>
+            <p className="whitespace-nowrap text-[12.5px] leading-4 text-muted-foreground max-md:hidden">
+              {activity.label} <span className="tnum">{formatTimeOnDay(activity.at, s.businessDate)}</span>
+            </p>
+          </div>
+        );
+      },
+    },
+    {
+      key: 'float',
+      header: 'Opening float',
+      align: 'right',
+      phone: 'detail',
+      cell: (s) => (
+        <span className="whitespace-nowrap">
+          <span className="md:hidden">Float </span>
+          <Amount paise={s.openingFloat} className="max-md:font-normal" />
+        </span>
+      ),
+    },
+    {
       key: 'closeout',
       header: 'Close-out',
+      phone: 'block',
       cell: (s) =>
         s.status === 'RECONCILED' ? (
-          <div className="min-w-[13rem] space-y-1 text-[13px]">
-            <Discrepancy paise={s.discrepancy} />
+          <div className="space-y-0.5 text-[13px] leading-[18px] md:min-w-[12rem]">
+            <Discrepancy paise={s.discrepancy} className="text-[14px] max-md:text-[13px]" />
             <p className="tnum text-muted-foreground">
               Declared {formatPaise(s.declaredClosing)} · Expected {formatPaise(s.expectedClosing)}
             </p>
             {settledByDispute(s) ? <p className="font-medium text-warning">Settled by two administrators’ matching counts</p> : null}
-            <p className="text-muted-foreground">
-              Signed off by {adminLabel(s.signedOffBy)} · {formatDateTime(s.signedOffAt)}
-            </p>
+            <p className="text-muted-foreground">Signed off by {adminLabel(s.signedOffBy)}</p>
           </div>
         ) : s.status === 'CLOSED' && s.disputedBy ? (
           // A first supervisor disagreed with the teller: who, never the figure
-          <div className="min-w-[13rem] space-y-1 text-[13px]">
-            <Badge tone="warning">Count disputed</Badge>
+          <div className="space-y-0.5 text-[13px] leading-[18px] md:min-w-[12rem]">
+            <p className="font-medium text-warning">Count disputed</p>
             <p className="text-muted-foreground">
               Disputed by {adminLabel(s.disputedBy)} · needs {s.disputedBy === user.id ? 'a different' : 'a second'} administrator’s count
             </p>
@@ -139,9 +178,7 @@ export default function TellerSessionsPage() {
         ) : s.status === 'CLOSED' ? (
           // Declared and expected figures stay hidden until a supervisor has counted blind
           <span className="text-[13px] text-muted-foreground">Awaiting count</span>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        ),
+        ) : null,
     },
     ...(canAct
       ? [
@@ -149,13 +186,25 @@ export default function TellerSessionsPage() {
             key: 'actions',
             header: <span className="sr-only">Actions</span>,
             align: 'right' as const,
+            phone: 'action' as const,
             cell: (s: SupervisorSession) =>
               s.status === 'ISSUED' ? (
-                <Button size="sm" variant="outline" aria-label={`Cancel float for ${tellers.label(s.tellerId)}`} onClick={() => setCancelling(s)}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="max-md:h-11 max-md:w-full max-md:text-[15px]"
+                  aria-label={`Cancel float for ${tellers.label(s.tellerId)}`}
+                  onClick={() => setCancelling(s)}
+                >
                   Cancel float
                 </Button>
               ) : s.status === 'CLOSED' ? (
-                <Button size="sm" aria-label={`Count and sign off for ${tellers.label(s.tellerId)}`} onClick={() => setSigningOff(s)}>
+                <Button
+                  size="sm"
+                  className="max-md:h-11 max-md:w-full max-md:text-[15px]"
+                  aria-label={`Count and sign off for ${tellers.label(s.tellerId)}`}
+                  onClick={() => setSigningOff(s)}
+                >
                   Count and sign off
                 </Button>
               ) : null,
@@ -165,9 +214,8 @@ export default function TellerSessionsPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 lg:space-y-8">
       <PageHeader
-        eyebrow="Branch"
         title="Teller sessions"
         description="Opening floats, closing counts and sign-off for every teller’s business day."
         actions={
@@ -183,17 +231,17 @@ export default function TellerSessionsPage() {
           Only bank administrators can issue floats, cancel them or sign off sessions.
         </Callout>
       )}
-      <Card>
-        <StatusTabs
-          label="Filter by status"
-          tabs={TABS}
-          value={filter}
-          onChange={(next) => {
-            setFilter(next);
-            setOffset(0);
-          }}
-        >
-          <DataTable
+      <StatusTabs
+        label="Filter by status"
+        tabs={TABS}
+        value={filter}
+        onChange={(next) => {
+          setFilter(next);
+          setOffset(0);
+        }}
+      >
+        <Card className="overflow-hidden">
+          <RowTable
             caption="Teller sessions"
             columns={columns}
             rows={query.data}
@@ -207,8 +255,8 @@ export default function TellerSessionsPage() {
           {query.data && (query.data.length > 0 || offset > 0) ? (
             <Pagination offset={offset} limit={PAGE_SIZE} count={query.data.length} onChange={setOffset} />
           ) : null}
-        </StatusTabs>
-      </Card>
+        </Card>
+      </StatusTabs>
 
       {canAct ? (
         <>

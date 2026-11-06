@@ -38,6 +38,70 @@ export function internalTransactionIds(entries: AccountEntry[]): Set<string> {
   return new Set([...debits].filter((id) => credits.has(id)));
 }
 
+export interface BalancePoint {
+  key: string;
+  label: string;
+  balancePaise: Paise;
+  /** Chart geometry only, in rupees (never used for money maths or display) */
+  value: number;
+}
+
+export interface AccountHistory {
+  entries: LedgerEntry[];
+  /** The balance the API reports now, used for accounts with no statement entries */
+  currentPaise: Paise | undefined;
+  /** True when the statement page was full, so older entries exist that we did not fetch */
+  truncated: boolean;
+  /** When the account was opened: there is nothing to draw before the first account existed */
+  openedAt?: string;
+}
+
+/**
+ * Total end-of-day balance across the given accounts for the last `days` days (today included), rebuilt from
+ * statement entries: each one carries the balance after it. When an account's history was cut off by the page
+ * size, the series starts at the oldest entry we hold, so it never shows a balance we can't vouch for.
+ * Returns null when fewer than two days remain.
+ */
+export function buildBalanceSeries(accounts: AccountHistory[], now = new Date(), days = 30): BalancePoint[] | null {
+  const sortedHistories = accounts.map((a) => ({ ...a, sorted: [...a.entries].sort((x, y) => x.createdAt.localeCompare(y.createdAt)) }));
+  // The first day every account's balance is known for, and the day the first account was opened
+  const truncatedFrom = sortedHistories
+    .filter((a) => a.truncated && a.sorted[0])
+    .map((a) => midnight(new Date(a.sorted[0]!.createdAt)))
+    .reduce<Date | null>((latest, d) => (!latest || d > latest ? d : latest), null);
+  const openedFrom = accounts.every((a) => a.openedAt)
+    ? accounts.map((a) => midnight(new Date(a.openedAt!))).reduce<Date | null>((first, d) => (!first || d < first ? d : first), null)
+    : null;
+  const knownFrom = truncatedFrom && openedFrom ? (truncatedFrom > openedFrom ? truncatedFrom : openedFrom) : (truncatedFrom ?? openedFrom);
+
+  const timelines = sortedHistories.map(({ sorted, currentPaise }) => {
+    const first = sorted[0];
+    if (!first) return () => currentPaise ?? '0';
+    const signed = BigInt(first.amountInPaise) * (first.entryType === 'CREDIT' ? 1n : -1n);
+    const opening = (BigInt(first.balanceAfterInPaise) - signed).toString();
+    return (end: Date): Paise => {
+      let balance = opening;
+      for (const entry of sorted) {
+        if (new Date(entry.createdAt) >= end) break;
+        balance = entry.balanceAfterInPaise;
+      }
+      return balance;
+    };
+  });
+
+  const points: BalancePoint[] = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1);
+    if (knownFrom && date < knownFrom) continue;
+    const balancePaise = addPaise(timelines.map((at) => at(end)));
+    points.push({ key: dayKey(date), label: formatShortDate(date), balancePaise, value: Number(balancePaise) / 100 });
+  }
+  return points.length >= 2 ? points : null;
+}
+
+const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
 /** Money in and out per local day for the last `days` days (today included), from statement entries */
 export function buildCashFlow(entries: AccountEntry[], now = new Date(), days = 30): CashFlow {
   const internal = internalTransactionIds(entries);

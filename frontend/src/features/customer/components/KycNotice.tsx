@@ -21,17 +21,15 @@ export function KycNotice({ profile, className }: { profile: CustomerProfile | n
   if (profile === null) {
     return (
       <Card className={className}>
-        <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:p-6">
-          <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
-            <UserRoundPlus className="size-5" aria-hidden="true" />
-          </span>
+        <div className="flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:p-7">
+          <UserRoundPlus className="size-8 shrink-0 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" />
           <div className="min-w-0 flex-1 space-y-1">
-            <h2 className="text-[15px] font-semibold">Complete your profile so we can verify your identity</h2>
-            <p className="text-[13px] text-muted-foreground">
+            <h2 className="text-headline">Complete your profile so we can verify your identity</h2>
+            <p className="text-[14px] leading-5 text-muted-foreground">
               It takes a couple of minutes. Once we’ve verified your identity you can open accounts and move money.
             </p>
           </div>
-          <Button asChild>
+          <Button asChild size="lg" className="self-start sm:self-auto">
             <Link to="/profile">
               Complete your profile <ArrowRight aria-hidden="true" />
             </Link>

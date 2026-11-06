@@ -24,10 +24,46 @@ describe('DashboardPage', () => {
     render();
     expect(await screen.findByRole('heading', { level: 1, name: /asha/i })).toBeInTheDocument();
     const summary = screen.getByRole('region', { name: 'Summary' });
-    expect(await within(summary).findByText('₹1,75,500.00')).toBeInTheDocument();
+    // Rupees and paise are styled apart, so match the figure as a whole
+    expect((await within(summary).findAllByText((_, el) => el?.textContent === '₹1,75,500.00')).length).toBeGreaterThan(0);
     expect(within(summary).getByText(/across 2 active accounts/i)).toBeInTheDocument();
     expect(within(summary).getByText(/1 frozen account not included/i)).toBeInTheDocument();
-    expect(within(summary).getByText('3')).toBeInTheDocument();
+  });
+
+  it('shows where the money sits across active accounts until there is a week of history', async () => {
+    const openedToday = { createdAt: new Date().toISOString() };
+    mockCustomerApi({
+      profile: aProfile(),
+      accounts: [{ ...savings, ...openedToday }, { ...current, ...openedToday }, frozen],
+      balances: { [IDS.savings]: '12550075', [IDS.current]: '4999925', [IDS.payeeAccount]: '100000' },
+      history: {},
+    });
+    render();
+    const summary = await screen.findByRole('region', { name: 'Summary' });
+    expect(await within(summary).findByText('Where your money is')).toBeInTheDocument();
+    // Shares come from exact paise: 1,25,500.75 and 49,999.25 of 1,75,500.00
+    expect(within(summary).getByText('72%')).toBeInTheDocument();
+    expect(within(summary).getByText('28%')).toBeInTheDocument();
+    expect(within(summary).queryByText(/••••4444/)).not.toBeInTheDocument();
+    expect(within(summary).queryByRole('img')).not.toBeInTheDocument();
+  });
+
+  it('draws the total balance over the last 30 days once there is history to show', async () => {
+    mockCustomerApi({
+      profile: aProfile(),
+      accounts: [savings],
+      balances: { [IDS.savings]: '12550075' },
+      history: {
+        [IDS.savings]: [
+          anEntry({ entryId: 'p', transactionId: 'p', entryType: 'CREDIT', amountInPaise: '50075', balanceAfterInPaise: '12550075', createdAt: daysAgo(3) }),
+        ],
+      },
+    });
+    render();
+    const summary = await screen.findByRole('region', { name: 'Summary' });
+    const chart = await within(summary).findByRole('img', { name: /total balance from .* to today|total balance from/i });
+    expect(chart).toHaveAccessibleName(/₹1,25,000\.00 to ₹1,25,500\.75/);
+    expect(within(summary).queryByText('Where your money is')).not.toBeInTheDocument();
   });
 
   it('shows each account with its balance and status, linking to the account', async () => {
@@ -42,8 +78,9 @@ describe('DashboardPage', () => {
     const link = await within(strip).findByRole('link', { name: /savings ••••6789/i });
     expect(link).toHaveAttribute('href', `/accounts/${IDS.savings}`);
     expect(await within(link).findByText('₹1,25,500.75')).toBeInTheDocument();
-    expect(within(link).getByText('Active')).toBeInTheDocument();
-    const frozenLink = within(strip).getByRole('link', { name: /savings ••••4444/i });
+    // Only an account that needs attention carries a status
+    expect(within(link).queryByText('Active')).not.toBeInTheDocument();
+    const frozenLink = within(strip).getByRole('link', { name: /savings ••••4444, frozen/i });
     expect(within(frozenLink).getByText('Frozen')).toBeInTheDocument();
   });
 
@@ -190,7 +227,7 @@ describe('DashboardPage', () => {
     const actions = await screen.findByRole('region', { name: 'Quick actions' });
     expect(within(actions).getByRole('link', { name: /transfer/i })).toHaveAttribute('href', '/transfer');
     expect(within(actions).getByRole('link', { name: /add payee/i })).toHaveAttribute('href', '/payees?add=1');
-    expect(within(actions).getByRole('link', { name: /cash withdrawal code/i })).toHaveAttribute('href', '/cash-withdrawal');
+    expect(within(actions).getByRole('link', { name: /withdraw cash/i })).toHaveAttribute('href', '/cash-withdrawal');
     expect(within(actions).getByRole('button', { name: /new account/i })).toBeInTheDocument();
   });
 
