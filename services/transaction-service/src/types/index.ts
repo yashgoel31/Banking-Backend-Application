@@ -4,6 +4,7 @@ export enum TransactionType {
   DEPOSIT = 'DEPOSIT',
   WITHDRAWAL = 'WITHDRAWAL',
   TRANSFER = 'TRANSFER',
+  CASH_TRANSFER = 'CASH_TRANSFER',
 }
 
 export enum TransactionStatus {
@@ -24,23 +25,23 @@ export enum IdempotencyStatus {
   FAILED = 'FAILED',
 }
 
-export interface DepositDTO {
+export interface CashOperationDTO {
+  type: 'DEPOSIT' | 'WITHDRAWAL';
   accountId: string;
   amountInPaise: bigint;
   description?: string;
-  referenceId?: string;
+  /** Required for withdrawals: the customer's single-use authorisation code */
+  authorizationCode?: string;
 }
 
-export interface WithdrawDTO {
-  accountId: string;
-  amountInPaise: bigint;
-  description?: string;
-  referenceId?: string;
-}
+export type CashOperationResult =
+  | { status: 'EXECUTED'; cashOperationId: string; transaction: TransactionResult }
+  | { status: 'PENDING_APPROVAL'; cashOperationId: string };
 
 export interface TransferDTO {
   sourceAccountId: string;
-  destinationAccountId: string;
+  destinationAccountId?: string;
+  destinationAccountNumber?: string;
   amountInPaise: bigint;
   description?: string;
   referenceId?: string;
@@ -55,4 +56,20 @@ export interface TransactionResult {
   sourceAccountId?: string | null;
   destinationAccountId?: string | null;
   createdAt: Date;
+}
+
+export interface LedgerAccountProvisionDTO {
+  id: string;
+  accountNumber: string;
+  customerId: string;
+  currency: string;
+  dailyLimitPaise: bigint;
+  isActive: boolean;
+}
+
+export interface LedgerAccountUpdateDTO {
+  isActive?: boolean;
+  dailyLimitPaise?: bigint;
+  /** account-service control-state version; applied only if newer than the ledger's */
+  version: number;
 }

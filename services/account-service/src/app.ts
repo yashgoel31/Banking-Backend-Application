@@ -1,109 +1,125 @@
-import express, { Request, Response } from 'express';
-import { PrismaClient } from './generated/client';
+import 'dotenv/config';
+import { Request, Response } from 'express';
+import Redis from 'ioredis';
+import { PrismaClient } from '../generated/client';
 import {
-  correlationIdMiddleware,
+  acquireJobLease,
+  connectRedis,
+  createAuthenticate,
+  createBaseApp,
+  createEventPublisher,
   errorHandlerMiddleware,
+  assertJwtVerificationConfigured,
+  getInternalToken,
+  isSwaggerEnabled,
+  logger,
+  notFoundHandler,
+  OutboxRelay,
+  RedisTokenStateStore,
   setupSwagger,
+  startHttpServer,
+  TokenStateStore,
+  prismaClientOptions,
 } from '@banksphere/common';
-import { AccountService, KafkaPublisher } from './services/account.service';
+import { AccountService } from './services/account.service';
 import { AccountController } from './controllers/account.controller';
 import { createAccountRouter } from './routes/account.routes';
+import { HttpLedgerClient, LedgerClient } from './clients/ledger.client';
+import { CustomerClient, HttpCustomerClient } from './clients/customer.client';
 
-// BigInt JSON serializer
-(BigInt.prototype as any).toJSON = function () {
-  return this.toString();
-};
+export interface AccountAppDeps {
+  tokenState: TokenStateStore;
+  ledgerClient?: LedgerClient;
+  customerClient?: CustomerClient;
+  redis?: Redis;
+}
 
-export function createApp(prisma: PrismaClient, kafkaPublisher?: KafkaPublisher) {
-  const app = express();
-  app.use(express.json());
+export function createApp(prisma: PrismaClient, deps: AccountAppDeps) {
+  assertJwtVerificationConfigured(); // Fail fast on missing/invalid JWT public keys
+  getInternalToken('LEDGER_INTERNAL_TOKEN');
+  getInternalToken('CUSTOMER_INTERNAL_TOKEN');
+  const app = createBaseApp();
 
-  // Tracing middleware
-  app.use(correlationIdMiddleware);
-
-  // Simulated Kafka publisher if none injected
-  const publisher: KafkaPublisher = kafkaPublisher || {
-    async publish(topic: string, key: string, payload: any) {
-      console.log(`[KafkaPublisher SIMULATED] Topic: ${topic} | Key: ${key}`, JSON.stringify(payload));
-    },
-  };
-
-  const accountService = new AccountService(prisma, publisher);
+  const accountService = new AccountService(
+    prisma,
+    deps.ledgerClient ?? new HttpLedgerClient(),
+    deps.customerClient ?? new HttpCustomerClient()
+  );
   const accountController = new AccountController(accountService);
 
-  // Routes
-  app.use('/api/v1/accounts', createAccountRouter(accountController));
+  app.use('/api/v1/accounts', createAccountRouter(accountController, createAuthenticate(deps.tokenState)));
 
-  // OpenAPI Swagger Docs
-  setupSwagger(app, {
-    title: 'BankSphere - Account Service',
-    version: '1.0.0',
-    description: 'Bank account provisioning, 12-digit account number generation, and lifecycle states',
-    paths: {
-      '/api/v1/accounts': {
-        post: {
-          summary: 'Provision a new bank account for authenticated customer',
+  if (isSwaggerEnabled()) {
+    setupSwagger(app, {
+      title: 'BankSphere - Account Service',
+      version: '2.0.0',
+      description: 'Bank account provisioning (KYC-gated), 12-digit account numbers, lifecycle states and limits',
+      paths: {
+        '/api/v1/accounts': {
+          post: { summary: 'Open an account (requires VERIFIED KYC)' },
+          get: { summary: 'List accounts (customers: own; staff: ?customerId=)' },
         },
-        get: {
-          summary: 'List all accounts owned by authenticated customer',
+        '/api/v1/accounts/{accountId}': {
+          get: { summary: 'Get bank account details by ID' },
+        },
+        '/api/v1/accounts/{accountId}/status': {
+          patch: {
+            summary:
+              'Update account status. Customers may only freeze; BANK_ADMIN may unfreeze or close (zero balance)',
+          },
+        },
+        '/api/v1/accounts/{accountId}/daily-limit': {
+          patch: { summary: 'Change the daily outgoing limit (customers capped, BANK_ADMIN unrestricted)' },
         },
       },
-      '/api/v1/accounts/{accountId}': {
-        get: {
-          summary: 'Get bank account details by ID',
-        },
-      },
-      '/api/v1/accounts/{accountId}/status': {
-        patch: {
-          summary: 'Update account status (ACTIVE, FROZEN, CLOSED)',
-        },
-      },
-    },
-  });
+    });
+  }
 
-  // Health and Readiness
-  app.get('/health', async (_req: Request, res: Response) => {
+  app.get('/health', async (req: Request, res: Response) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
-      res.json({
-        status: 'UP',
-        service: 'account-service',
-        database: 'connected',
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err: any) {
-      res.status(503).json({
-        status: 'DOWN',
-        error: err.message,
-      });
+      if (deps.redis) await deps.redis.ping();
+      res.json({ status: 'UP', service: 'account-service', timestamp: new Date().toISOString() });
+    } catch (err) {
+      req.log.error({ err }, 'Health check failed');
+      res.status(503).json({ status: 'DOWN', service: 'account-service' });
     }
   });
 
-  // Centralized Error Handling
+  app.use(notFoundHandler);
   app.use(errorHandlerMiddleware);
 
-  return { app, prisma };
+  return { app, prisma, accountService };
 }
 
-// Direct server launch
+async function main(): Promise<void> {
+  const prisma = new PrismaClient(prismaClientOptions());
+  const redis = await connectRedis();
+  const { app, accountService } = createApp(prisma, { tokenState: new RedisTokenStateStore(redis), redis });
+  const reconcileIntervalMs = Number(process.env.RECONCILE_INTERVAL_MS || 5 * 60 * 1000);
+  const reconcileTimer = setInterval(() => {
+    // One replica at a time (lease), not every instance walking every account
+    acquireJobLease(prisma, 'account-ledger-reconcile', Math.ceil((reconcileIntervalMs * 2) / 1000))
+      .then((leader) => (leader ? accountService.reconcileWithLedger() : undefined))
+      .catch((err) => logger.error({ err }, 'Account/ledger reconciliation failed'));
+  }, reconcileIntervalMs);
+
+  const { publisher, kafka } = createEventPublisher(process.env.KAFKA_CLIENT_ID || 'account-service');
+  const relay = publisher ? new OutboxRelay(prisma, publisher) : null;
+  relay?.start(Number(process.env.OUTBOX_POLL_INTERVAL_MS || 2000));
+
+  startHttpServer(app, process.env.PORT || 8003, 'account-service', [
+    () => clearInterval(reconcileTimer),
+    () => relay?.stop(),
+    () => kafka?.disconnect(),
+    () => prisma.$disconnect(),
+    () => redis.quit(),
+  ]);
+}
+
 if (require.main === module) {
-  const prisma = new PrismaClient();
-  const { app } = createApp(prisma);
-  const PORT = process.env.PORT || 8003;
-
-  const server = app.listen(PORT, () => {
-    console.log(`BankSphere Account Service running on port ${PORT}`);
+  main().catch((err) => {
+    logger.fatal({ err }, 'account-service failed to start');
+    process.exit(1);
   });
-
-  const shutdown = async () => {
-    console.log('Shutting down Account Service gracefully...');
-    server.close(async () => {
-      await prisma.$disconnect();
-      console.log('Account Service connections closed.');
-      process.exit(0);
-    });
-  };
-
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
 }
