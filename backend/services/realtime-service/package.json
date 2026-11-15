@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@banksphere/common": "*",
-    "dotenv": "^16.4.5",
+    "dotenv": "^18.0.9",
     "express": "^4.19.2",
     "zod": "^4.6.7"
   },
