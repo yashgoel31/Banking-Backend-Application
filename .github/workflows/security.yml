@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: javascript-typescript
           build-mode: none
@@ -58,7 +58,7 @@ jobs:
               - "**/*.test.tsx"
               - frontend/e2e
               - loadtest
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:javascript-typescript
 
@@ -115,7 +115,7 @@ jobs:
       - name: Upload results
         # The report is written whether or not leaks were found (hashFiles cannot see outside the workspace)
         if: ${{ !cancelled() && steps.gitleaks.outcome != 'skipped' }}
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ runner.temp }}/gitleaks/gitleaks.sarif
           category: gitleaks
@@ -146,7 +146,7 @@ jobs:
             --format sarif --output /out/trivy-fs.sarif /src
       - name: Upload results
         if: ${{ !cancelled() && steps.repository-report.outcome == 'success' }}
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ runner.temp }}/trivy-out/trivy-fs.sarif
           category: trivy-repository
@@ -188,8 +188,8 @@ jobs:
           # Every backend service image has the same layers (one node_modules with every workspace's production
           # dependencies, all packages and services; only ENV SERVICE differs), so one service stands for all
           - { image: api-gateway, context: backend, service: api-gateway }
-          # Build stage with dev tooling: runs as the migration job with schema-owner credentials
-          - { image: migrate, context: backend, target: build }
+          # Migration job image (the build stage's Prisma CLI, no package manager): runs with schema-owner credentials
+          - { image: migrate, context: backend, target: migrate }
           - { image: web, context: frontend }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -197,7 +197,10 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Reuses the layer cache written by ci.yml (read only: CI owns the cache) and exports a tarball to scan
+      # A cache blob evicted under a live manifest fails the build (BlobNotFound): retry once without the cache
       - name: Build
+        id: build
+        continue-on-error: true
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
@@ -206,6 +209,16 @@ jobs:
           tags: banksphere/${{ matrix.image }}:scan-${{ github.sha }}
           outputs: type=docker,dest=${{ runner.temp }}/image.tar
           cache-from: type=gha,scope=${{ matrix.image }}
+      - name: Build (retry without the layer cache)
+        if: ${{ steps.build.outcome == 'failure' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          build-args: ${{ matrix.service && format('SERVICE={0}', matrix.service) || '' }}
+          tags: banksphere/${{ matrix.image }}:scan-${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
+          no-cache: true
       - name: Scan image (all severities, for code scanning)
         id: image-report
         run: |
@@ -217,7 +230,7 @@ jobs:
             --format sarif --output /work/trivy-out/image.sarif
       - name: Upload results
         if: ${{ !cancelled() && steps.image-report.outcome == 'success' }}
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: ${{ runner.temp }}/trivy-out/image.sarif
           category: trivy-image-${{ matrix.image }}
