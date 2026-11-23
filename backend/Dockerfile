@@ -3,7 +3,7 @@
 # No shipped stage carries npm, npx, yarn or corepack: nothing needs a package manager at run time, and the
 # packages bundled inside npm (undici, brace-expansion, ...) are a recurring source of advisories.
 
-FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS build
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS build
 # Alpine publishes fixes more often than the base image is rebuilt: upgrade its packages at build time
 RUN apk upgrade --no-cache && apk add --no-cache openssl
 WORKDIR /app
@@ -34,7 +34,7 @@ FROM build AS migrate
 RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn*
 
-FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS runtime
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache openssl \
     && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
        /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn*
